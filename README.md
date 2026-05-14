@@ -250,6 +250,26 @@ The assistant will use `workload_create` with `credential_env_vars` to securely 
 > "Show me the field names for S3 credentials"
 > "Create a workload that injects my AWS credentials as environment variables"
 
+### Example: Debug Workload Issues
+
+> "My workload is in errored state. Show me the status details and logs"
+> "Check the proton status details for workload abc123 to see why containers are failing"
+> "Show me the events for workload xyz to understand what went wrong"
+
+**Debugging workflow:**
+1. **Check workload status**: `workload_status(workload_id)` - Shows conditions, log tail, and error messages
+2. **List protons**: `proton_list(workload_id)` - Find which proton is having issues
+3. **Check proton details**: `proton_status_details(workload_id, proton_id)` - See per-replica status, container states, restart counts
+4. **View application logs**: `otel_logs(workload_id)` - See full application logs from stdout/stderr
+5. **Check events**: `workload_events(workload_id)` - See workload lifecycle events
+
+**Common issues detected:**
+- **CrashLoopBackOff** - Container keeps crashing, check logs for error
+- **ImagePullBackOff** - Can't pull container image, check image URI and credentials
+- **OOMKilled** - Out of memory, increase memory allocation
+- **Pending** - Can't schedule, check resource availability
+- **Failed probes** - Readiness/liveness probes failing, check probe configuration
+
 ### Available MCP Tools for Workload Management
 
 | Tool | Use Case |
@@ -332,6 +352,93 @@ Then configure Claude Desktop:
 }
 ```
 
+## Troubleshooting & Debugging
+
+When workloads fail to start or enter an errored state, use these tools to diagnose issues:
+
+### Debugging Tools Summary
+
+| Tool | What It Shows | When to Use |
+|------|---------------|-------------|
+| `workload_status` | Overall status, conditions, log tail | First step: get high-level view |
+| `proton_list` | All deployment instances (protons) | Find which proton is having issues |
+| `proton_get` | Proton details with status | Get overview of a specific proton |
+| `proton_status_details` | Per-replica status, container states, restart counts | Deep dive into pod/container issues |
+| `workload_events` | Lifecycle events (created, started, errors) | Understand event timeline |
+| `otel_logs` | Full application logs (stdout/stderr) | See what your application logged |
+
+### Example Debugging Session
+
+**Scenario**: Workload stuck in "initializing" or shows "errored" status
+
+```python
+# Step 1: Check overall status
+workload_status("wkld-abc123")
+# Shows: status, conditions, recent log tail
+# Look for: error messages, crash reasons, probe failures
+
+# Step 2: List protons to find the problematic one
+proton_list("wkld-abc123")
+# Shows: all deployment instances and their status
+
+# Step 3: Get detailed proton status
+proton_status_details("wkld-abc123", "proton-xyz")
+# Shows:
+# - Per-replica phase (pending, running, failed)
+# - Container states (waiting, running, terminated)
+# - Restart counts (indicates crash loops)
+# - Ready conditions (PodScheduled, ContainersReady, Ready)
+# - Node addresses
+
+# Step 4: View application logs
+otel_logs("wkld-abc123", limit=100)
+# Shows: stdout/stderr from your application
+
+# Step 5: Check event history
+workload_events("wkld-abc123")
+# Shows: workload lifecycle events
+```
+
+### Common Error Patterns
+
+**CrashLoopBackOff**
+```
+Container State: waiting
+Reason: CrashLoopBackOff
+Restart Count: 5+
+```
+→ Your app is crashing. Check `otel_logs()` for errors.
+
+**ImagePullBackOff**
+```
+Container State: waiting
+Reason: ImagePullBackOff
+Message: Failed to pull image "myregistry/myapp:v1"
+```
+→ Can't pull image. Check image URI, registry credentials, or image existence.
+
+**OOMKilled**
+```
+Container State: terminated
+Reason: OOMKilled
+Exit Code: 137
+```
+→ Out of memory. Use `workload_settings_update()` to increase memory.
+
+**Probe Failures**
+```
+Condition: ContainersReady = False
+Reason: ReadinessProbe failed
+```
+→ Readiness probe failing. Check probe path/port configuration or app health endpoint.
+
+**Pending Pod**
+```
+Replica Phase: pending
+Condition: PodScheduled = False
+```
+→ Can't schedule pod. Check resource availability or constraints.
+
 ## Tools
 
 ### Workloads
@@ -358,11 +465,15 @@ Then configure Claude Desktop:
 
 ### Protons (Deployment Instances)
 
+Protons are the actual deployment instances of your workload. Use these tools for debugging container/pod issues.
+
 | Tool | Description |
 |------|-------------|
-| `proton_list` | List protons for a workload |
-| `proton_get` | Get proton details |
-| `proton_status_details` | Get per-replica status (debugging) |
+| `proton_list` | List all protons for a workload |
+| `proton_get` | Get proton details including status and runtime config |
+| `proton_status_details` | **[DEBUG]** Get per-replica status with container states, restart counts, and conditions |
+
+**Debugging tip**: When a workload fails, use `proton_status_details()` to see exactly why containers are failing (crash loops, image pull errors, OOM kills, probe failures, etc.).
 
 ### Artifacts
 
