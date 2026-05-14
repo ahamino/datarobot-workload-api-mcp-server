@@ -210,7 +210,7 @@ async def wait_for_workload_with_progress(
 
         # Error - include log tail
         if status == "errored":
-            progress_lines.append(f"ERROR: Workload entered 'errored' state")
+            progress_lines.append("ERROR: Workload entered 'errored' state")
             if log_tail:
                 progress_lines.append("Container logs:")
                 for line in log_tail[-15:]:

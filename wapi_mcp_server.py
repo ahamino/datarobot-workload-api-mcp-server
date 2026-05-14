@@ -19,6 +19,14 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from wapi_mcp.client import WapiClient
+from wapi_mcp.helpers import (
+    format_created_at,
+    extract_bundle,
+    format_scaling_info,
+    wait_for_status,
+    wait_for_workload_with_progress,
+)
+from wapi_mcp.telemetry import LOG, init_telemetry, trace_span, record_tool_call
 
 
 # ---------------------------------------------------------------------------
@@ -64,7 +72,7 @@ def create_session_header_middleware(app):
             headers.append((b"mcp-session-id", dr_session_id))
             scope = dict(scope)
             scope["headers"] = headers
-            mw_log.info(f"[MW] Translated x-datarobot-mcp-session-id -> mcp-session-id")
+            mw_log.info("[MW] Translated x-datarobot-mcp-session-id -> mcp-session-id")
 
         # Wrap send to add x-datarobot-mcp-session-id to response
         async def send_wrapper(message):
@@ -89,16 +97,6 @@ def create_session_header_middleware(app):
         await app(scope, receive, send_wrapper)
 
     return middleware
-
-
-from wapi_mcp.helpers import (
-    format_created_at,
-    extract_bundle,
-    format_scaling_info,
-    wait_for_status,
-    wait_for_workload_with_progress,
-)
-from wapi_mcp.telemetry import LOG, init_telemetry, trace_span, record_tool_call
 
 
 def parse_json_param(value, param_name: str):
@@ -711,7 +709,7 @@ async def workload_create(
     ui_url = client._build_url(f"/console-nextgen/workloads/{workload_id}/overview")
     status = workload.get("status", "unknown")
 
-    result = f"Workload created successfully!\n\n"
+    result = "Workload created successfully!\n\n"
     result += f"ID: {workload_id}\n"
     result += f"Status: {status}\n"
     result += f"Importance: {importance}\n"
@@ -1051,7 +1049,7 @@ async def workloads_stats_summary(
     by_importance = stats.get("byImportance", {})
     total = stats.get("total", 0)
 
-    result = f"=== Workloads Summary ===\n"
+    result = "=== Workloads Summary ===\n"
     result += f"Total: {total}\n\n"
 
     result += "By Status:\n"
@@ -2058,11 +2056,11 @@ async def otel_logs(
 
         output += f"[{timestamp}] {log_level}: {message}\n"
         if stacktrace:
-            output += f"  Stacktrace:\n"
+            output += "  Stacktrace:\n"
             for line in stacktrace.split("\n")[:10]:
                 output += f"    {line}\n"
 
-    output += f"\n=== SUMMARY ===\n"
+    output += "\n=== SUMMARY ===\n"
     output += f"Log levels: {level_counts}\n"
 
     if error_logs:

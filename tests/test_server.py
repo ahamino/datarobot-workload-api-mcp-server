@@ -1,6 +1,5 @@
 """Tests for the WAPI MCP server module."""
 
-import pytest
 
 
 class TestServerImport:
