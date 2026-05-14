@@ -530,7 +530,14 @@ async def workload_create(
 
     BEFORE CREATING - REQUIRED STEPS:
     1. Call read_openapi_spec() to understand the API schema and requirements
-    2. Call bundle_list() to see available compute bundles (CPU/GPU configs)
+    2. IF the user mentions GPU or asks for specific compute resources:
+       a. Call bundle_list() to see available compute bundles (CPU/GPU configs)
+       b. Use the appropriate bundle IDs in resource_bundle_ids parameter
+    3. IF the user asks to inject credentials or mentions AWS/S3/database credentials:
+       a. Call credential_list() to find available credentials and their IDs
+       b. Call credential_keys() to see what field names are available for that credential type
+       c. Use the credential_id and appropriate key names in credential_env_vars parameter
+       d. NEVER hardcode credentials in environment_vars - always use credential_env_vars
 
     CRITICAL - PORT REQUIREMENTS:
     - The port parameter MUST be >= 1024 (non-privileged ports only)
@@ -564,6 +571,21 @@ async def workload_create(
             autoscaling_target=50
         )
 
+    WITH CREDENTIALS (IMPORTANT - follow this workflow):
+        # Step 1: User says "I need AWS credentials injected"
+        # Step 2: Call credential_list() to find S3 credentials
+        # Step 3: Call credential_keys() to see available field names for "s3" type
+        # Step 4: Create workload with credential_env_vars:
+        workload_create(
+            name="my-app",
+            image_uri="docker.io/user/myapp:latest",
+            credential_env_vars=[
+                {"name": "AWS_ACCESS_KEY_ID", "credential_id": "abc123", "key": "awsAccessKeyId"},
+                {"name": "AWS_SECRET_ACCESS_KEY", "credential_id": "abc123", "key": "awsSecretAccessKey"}
+            ]
+        )
+        # NEVER put credentials in environment_vars - they won't be secure!
+
     Args:
         name: Workload name (required)
         artifact_id: Use existing artifact ID (don't set image_uri if using this)
@@ -575,7 +597,9 @@ async def workload_create(
         environment_vars: MUST BE A LIST like [{"name": "VAR", "value": "val"}]
         credential_env_vars: Inject DataRobot credentials as env vars. MUST BE A LIST like:
             [{"name": "AWS_KEY", "credential_id": "<id>", "key": "awsAccessKeyId"}]
-            Use credential_list() to find credential IDs and credential_keys() for key names.
+            WORKFLOW: First call credential_list() to get credential IDs, then call
+            credential_keys() to see available field names for that credential type.
+            NEVER hardcode secrets - always use this for sensitive values!
         readiness_probe_path: Health check path (e.g., "/health", "/readyz")
         liveness_probe_path: Liveness check path (e.g., "/health", "/healthz")
         entrypoint: MUST BE A LIST - NEVER guess, look up image docs first!
