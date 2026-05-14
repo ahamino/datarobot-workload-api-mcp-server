@@ -151,7 +151,10 @@ def traced_tool(func):
         start_time = time.time()
         LOG.info(f"Tool call: {tool_name}")
 
-        with trace_span(f"tool/{tool_name}", {"tool.name": tool_name}) as span:
+        # Serialize input for tracing (truncate to avoid huge spans)
+        input_str = json.dumps(kwargs, default=str)[:2000] if kwargs else "{}"
+
+        with trace_span(f"tool/{tool_name}", {"tool.name": tool_name, "tool.input": input_str}) as span:
             try:
                 result = await func(*args, **kwargs)
                 duration_ms = (time.time() - start_time) * 1000
@@ -159,6 +162,9 @@ def traced_tool(func):
                 if span:
                     span.set_attribute("tool.status", "success")
                     span.set_attribute("tool.duration_ms", duration_ms)
+                    # Truncate output to avoid huge spans
+                    output_str = str(result)[:2000] if result else ""
+                    span.set_attribute("tool.output", output_str)
                 LOG.info(f"Tool {tool_name} completed in {duration_ms:.1f}ms")
                 return result
 
@@ -169,6 +175,7 @@ def traced_tool(func):
                 if span:
                     span.set_attribute("tool.status", "error")
                     span.set_attribute("tool.error_type", error_type)
+                    span.set_attribute("tool.output", f"ERROR: {str(e)[:500]}")
                 LOG.error(f"Tool {tool_name} failed after {duration_ms:.1f}ms: {e}")
 
                 # Return formatted error message instead of raising
