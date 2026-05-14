@@ -55,15 +55,22 @@ docker buildx build --platform linux/amd64 \
 
 Create a workload with an inline artifact. The artifact is created with `status=draft` by default, allowing iteration.
 
-**First, create a DataRobot credential for your API token:**
+**First, get a DataRobot credential ID for your API token:**
 
 ```bash
-# Get your credential ID (you may already have one)
-CREDENTIAL_ID=$(curl -s "${DATAROBOT_API_ENDPOINT}/credentials/" \
-  -H "Authorization: Bearer ${DATAROBOT_API_TOKEN}" | jq -r '.data[0].credentialId')
+# List credentials and get the first one
+CREDENTIAL_ID=$(curl -s "${DATAROBOT_API_ENDPOINT}/credentials/?limit=10" -H "Authorization: Bearer ${DATAROBOT_API_TOKEN}" | jq -r '.data[0].credentialId')
 
-# Or create a new API token credential if needed
+# Verify it was set
+echo "Using credential ID: ${CREDENTIAL_ID}"
+
+# Or view all credentials to choose one
+curl -s "${DATAROBOT_API_ENDPOINT}/credentials/" -H "Authorization: Bearer ${DATAROBOT_API_TOKEN}" | jq '.data[] | {credentialId, name, credentialType}'
 ```
+
+If you don't have any credentials yet, create one in the DataRobot UI first:
+- Go to **Developer Tools > Credentials** in DataRobot
+- Create an **API Token** credential with your `DATAROBOT_API_TOKEN`
 
 **Then create the workload using credential injection:**
 
