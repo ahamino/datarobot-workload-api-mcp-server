@@ -2084,11 +2084,13 @@ FALLBACK_CREDENTIAL_KEYS = {
     "gcp": ["gcpKey"],
     "api_token": ["apiToken"],
     "bearer": ["token"],
-    "oauth": ["oauthClientId", "oauthClientSecret", "oauthAccessToken", "oauthRefreshToken"],
+    "oauth": ["token", "refreshToken"],
     "azure": ["azureConnectionString"],
     "azure_sas": ["sasToken"],
     "snowflake_key_pair_user_account": ["privateKeyStr", "passphrase", "user"],
     "databricks_access_token_account": ["databricksAccessToken"],
+    "box_jwt": ["enterpriseId", "publicKeyId"],
+    "client_id_and_secret": ["clientId", "clientSecret"],
 }
 
 
@@ -2113,6 +2115,7 @@ async def get_credential_schemas() -> dict[str, list[str]]:
 
         # Fetch OpenAPI spec
         import aiohttp
+        import re
         async with aiohttp.ClientSession() as session:
             async with session.get(openapi_url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
                 if resp.status != 200:
@@ -2129,18 +2132,66 @@ async def get_credential_schemas() -> dict[str, list[str]]:
         schemas = spec.get("components", {}).get("schemas", {})
         credential_schemas = {}
 
-        # Look for all credential-related schemas
+        # Parse CredentialsUpdate schema which has all field definitions
+        # with descriptions indicating which credential type each field belongs to
+        credentials_update = schemas.get("CredentialsUpdate", {})
+        if credentials_update:
+            properties = credentials_update.get("properties", {})
+
+            # Parse each field and extract credential types from description
+            for field_name, field_def in properties.items():
+                if not isinstance(field_def, dict):
+                    continue
+
+                description = field_def.get("description", "")
+
+                # Skip non-credential fields
+                if field_name in ["name", "description"]:
+                    continue
+
+                # Extract credential types from description
+                # Pattern: "(applicable for credentialType `type1`, `type2`, ...)"
+                # or "(applicable for `type1` only)"
+                cred_types_match = re.findall(r'credentialType `([^`]+)`', description)
+                cred_types_match.extend(re.findall(r'applicable for `([^`]+)`', description))
+
+                if cred_types_match:
+                    # This field belongs to specific credential types
+                    for cred_type in cred_types_match:
+                        if cred_type not in credential_schemas:
+                            credential_schemas[cred_type] = []
+                        if field_name not in credential_schemas[cred_type]:
+                            credential_schemas[cred_type].append(field_name)
+                else:
+                    # Check if description gives us a hint about the type
+                    # e.g., "AWS access key", "API token", etc.
+                    desc_lower = description.lower()
+                    if "aws" in desc_lower and "s3" not in credential_schemas:
+                        credential_schemas.setdefault("s3", []).append(field_name)
+                    elif "api token" in desc_lower:
+                        credential_schemas.setdefault("api_token", []).append(field_name)
+                    elif "oauth" in desc_lower and "oauth" not in cred_types_match:
+                        credential_schemas.setdefault("oauth", []).append(field_name)
+                    elif "databricks" in desc_lower:
+                        credential_schemas.setdefault("databricks_access_token_account", []).append(field_name)
+                    elif "box" in desc_lower:
+                        credential_schemas.setdefault("box_jwt", []).append(field_name)
+                    elif "azure" in desc_lower and "service principal" in desc_lower:
+                        credential_schemas.setdefault("azure_service_principal", []).append(field_name)
+                    elif "snowflake" in desc_lower and "key pair" in desc_lower:
+                        credential_schemas.setdefault("snowflake_key_pair_user_account", []).append(field_name)
+                    elif "gcp" in desc_lower or "google" in desc_lower:
+                        credential_schemas.setdefault("gcp", []).append(field_name)
+
+        # Also check for response schemas with single credential type enum
         for schema_name, schema_def in schemas.items():
-            # Credential schemas typically have "Credential" in the name or have credentialType property
             if not isinstance(schema_def, dict):
                 continue
 
-            # Check if this looks like a credential schema
             properties = schema_def.get("properties", {})
 
-            # Pattern 1: Schema has credentialType property (credential response schemas)
+            # Look for schemas with credentialType property that has a single enum value
             if "credentialType" in properties:
-                # Get the credential type from enum if available
                 cred_type_prop = properties.get("credentialType", {})
                 if "enum" in cred_type_prop and len(cred_type_prop["enum"]) == 1:
                     cred_type = cred_type_prop["enum"][0]
@@ -2152,24 +2203,8 @@ async def get_credential_schemas() -> dict[str, list[str]]:
                             "creationDate", "creator", "role"
                         ]
                     ]
-                    if field_names:
+                    if field_names and cred_type not in credential_schemas:
                         credential_schemas[cred_type] = field_names
-
-            # Pattern 2: Schema name ends with "Credential" or "Credentials" (input schemas)
-            elif schema_name.endswith("Credential") or schema_name.endswith("Credentials"):
-                # Try to infer credential type from schema name
-                # e.g., S3Credentials -> s3, BasicCredential -> basic
-                cred_type = schema_name.replace("Credentials", "").replace("Credential", "")
-                cred_type = cred_type.lower()
-
-                # Convert camelCase to snake_case
-                import re
-                cred_type = re.sub(r'(?<!^)(?=[A-Z])', '_', cred_type).lower()
-
-                # Extract property names
-                field_names = list(properties.keys())
-                if field_names:
-                    credential_schemas[cred_type] = field_names
 
         if credential_schemas:
             LOG.info(f"Extracted {len(credential_schemas)} credential schemas from OpenAPI spec")
