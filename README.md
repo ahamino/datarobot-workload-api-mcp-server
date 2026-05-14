@@ -533,10 +533,12 @@ Securely inject DataRobot credentials as environment variables into your workloa
 - `basic` - Basic auth (user, password)
 - `api_token` - API tokens (apiToken)
 - `bearer` - Bearer tokens (token)
+- `oauth` - OAuth credentials (token, refreshToken)
 - `gcp` - Google Cloud Platform (gcpKey)
 - `azure_service_principal` - Azure SP (azureTenantId, clientId, clientSecret)
 - `azure` - Azure connection strings (azureConnectionString)
-- `oauth` - OAuth credentials (oauthClientId, oauthClientSecret, etc.)
+- `databricks_access_token_account` - Databricks (databricksAccessToken)
+- `snowflake_key_pair_user_account` - Snowflake (privateKeyStr, passphrase, user)
 - And more...
 
 **Example: Inject S3 credentials into a workload**
