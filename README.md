@@ -1,4 +1,4 @@
-# WAPI MCP Server
+# DataRobot Workload API MCP Server
 
 MCP server for the DataRobot Workload API. Manage workloads, artifacts, artifact repositories, and compute bundles through AI assistants.
 
@@ -47,7 +47,7 @@ This follows the development-to-production workflow: iterate on a workload with 
 
 ```bash
 docker buildx build --platform linux/amd64 \
-  -t your-registry/wapi-mcp-server:dev \
+  -t ghcr.io/ahamino/datarobot-workload-api-mcp-server:dev \
   --push .
 ```
 
@@ -68,12 +68,12 @@ curl -X POST "${DATAROBOT_API_ENDPOINT}/workloads/" \
       "spec": {
         "type": "service",
         "containerGroups": [{
+          "name": "default",
           "containers": [{
             "name": "main",
-            "imageUri": "abdodatarobot/wapi-mcp-server:latest",
+            "imageUri": "ghcr.io/ahamino/datarobot-workload-api-mcp-server:latest",
             "port": 8000,
             "primary": true,
-            "resourceRequest": {"cpu": 1, "memory": 536870912},
             "environmentVars": [
               {"name": "DATAROBOT_API_ENDPOINT", "value": "'"${DATAROBOT_API_ENDPOINT}"'"},
               {"name": "DATAROBOT_API_TOKEN", "value": "'"${DATAROBOT_API_TOKEN}"'"}
@@ -84,7 +84,13 @@ curl -X POST "${DATAROBOT_API_ENDPOINT}/workloads/" \
         }]
       }
     },
-    "runtime": {"replicaCount": 1}
+    "runtime": {
+      "containerGroups": [{
+        "name": "default",
+        "replicaCount": 1,
+        "resourceBundles": ["cpu.micro"]
+      }]
+    }
   }'
 ```
 
@@ -118,12 +124,12 @@ curl -X PATCH "${DATAROBOT_API_ENDPOINT}/artifacts/${ARTIFACT_ID}/" \
     "description": "WAPI MCP Server - iteration 2",
     "spec": {
       "containerGroups": [{
+        "name": "default",
         "containers": [{
           "name": "main",
-          "imageUri": "your-registry/wapi-mcp-server:v2",
+          "imageUri": "ghcr.io/ahamino/datarobot-workload-api-mcp-server:v2",
           "port": 8000,
           "primary": true,
-          "resourceRequest": {"cpu": 2, "memory": 1073741824},
           "environmentVars": [
             {"name": "DATAROBOT_API_ENDPOINT", "value": "'"${DATAROBOT_API_ENDPOINT}"'"},
             {"name": "DATAROBOT_API_TOKEN", "value": "'"${DATAROBOT_API_TOKEN}"'"}
@@ -393,7 +399,7 @@ read_openapi_spec(search="replica")
 ## Project Structure
 
 ```
-wapi-mcp-server/
+datarobot-workload-api-mcp-server/
 ├── wapi_mcp_server.py       # FastMCP server with tools
 ├── wapi_mcp/                # Core package
 │   ├── client.py            # Async HTTP client (aiohttp)
