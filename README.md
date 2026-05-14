@@ -53,7 +53,19 @@ docker buildx build --platform linux/amd64 \
 
 ### Step 2: Create Development Workload
 
-Create a workload with an inline artifact. The artifact is created with `status=draft` by default, allowing iteration:
+Create a workload with an inline artifact. The artifact is created with `status=draft` by default, allowing iteration.
+
+**First, create a DataRobot credential for your API token:**
+
+```bash
+# Get your credential ID (you may already have one)
+CREDENTIAL_ID=$(curl -s "${DATAROBOT_API_ENDPOINT}/credentials/" \
+  -H "Authorization: Bearer ${DATAROBOT_API_TOKEN}" | jq -r '.data[0].credentialId')
+
+# Or create a new API token credential if needed
+```
+
+**Then create the workload using credential injection:**
 
 ```bash
 curl -X POST "${DATAROBOT_API_ENDPOINT}/workloads/" \
@@ -76,7 +88,12 @@ curl -X POST "${DATAROBOT_API_ENDPOINT}/workloads/" \
             "primary": true,
             "environmentVars": [
               {"name": "DATAROBOT_API_ENDPOINT", "value": "'"${DATAROBOT_API_ENDPOINT}"'"},
-              {"name": "DATAROBOT_API_TOKEN", "value": "'"${DATAROBOT_API_TOKEN}"'"}
+              {
+                "source": "dr-credential",
+                "name": "DATAROBOT_API_TOKEN",
+                "drCredentialId": "'"${CREDENTIAL_ID}"'",
+                "key": "apiToken"
+              }
             ],
             "readinessProbe": {"path": "/readyz", "port": 8000, "initialDelaySeconds": 10},
             "livenessProbe": {"path": "/healthz", "port": 8000, "initialDelaySeconds": 30}
@@ -96,6 +113,11 @@ curl -X POST "${DATAROBOT_API_ENDPOINT}/workloads/" \
     }
   }'
 ```
+
+**Benefits of credential injection:**
+- Secrets are securely stored and never visible in workload specs
+- Credential rotation is centralized (update once, affects all workloads)
+- Audit trail for credential usage
 
 Save the returned IDs:
 
@@ -135,7 +157,12 @@ curl -X PATCH "${DATAROBOT_API_ENDPOINT}/artifacts/${ARTIFACT_ID}/" \
           "primary": true,
           "environmentVars": [
             {"name": "DATAROBOT_API_ENDPOINT", "value": "'"${DATAROBOT_API_ENDPOINT}"'"},
-            {"name": "DATAROBOT_API_TOKEN", "value": "'"${DATAROBOT_API_TOKEN}"'"}
+            {
+              "source": "dr-credential",
+              "name": "DATAROBOT_API_TOKEN",
+              "drCredentialId": "'"${CREDENTIAL_ID}"'",
+              "key": "apiToken"
+            }
           ],
           "readinessProbe": {"path": "/readyz", "port": 8000, "initialDelaySeconds": 10},
           "livenessProbe": {"path": "/healthz", "port": 8000, "initialDelaySeconds": 30}
@@ -190,6 +217,12 @@ Ask your AI assistant:
 
 The assistant will use the `workload_create` tool with the appropriate parameters.
 
+### Example: Create a Workload with Credentials
+
+> "Create a workload called 'data-processor' using image `myregistry/processor:v1` on port 8000. Inject my S3 credential with ID 'cred-abc123' as AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY environment variables."
+
+The assistant will use `workload_create` with `credential_env_vars` to securely inject the credentials.
+
 ### Example: List and Search Workloads
 
 > "List all running workloads"
@@ -211,6 +244,12 @@ The assistant will use the `workload_create` tool with the appropriate parameter
 > "Deploy artifact version v2.0 to workload abc123"
 > "Update the container image to myregistry/my-app:v2 and restart"
 
+### Example: Work with Credentials
+
+> "List all available credentials"
+> "Show me the field names for S3 credentials"
+> "Create a workload that injects my AWS credentials as environment variables"
+
 ### Available MCP Tools for Workload Management
 
 | Tool | Use Case |
@@ -220,9 +259,13 @@ The assistant will use the `workload_create` tool with the appropriate parameter
 | `workload_get` | Get detailed workload info including endpoint URL |
 | `workload_start` / `workload_stop` | Control workload lifecycle |
 | `workload_delete` | Remove workloads |
-| `workload_settings_update` | Change replicas, resources |
+| `workload_settings_get` / `workload_settings_update` | View/change replicas, resources, autoscaling |
+| `workload_stats` | Get performance statistics (requests, errors, latency) |
+| `workload_history` | View artifact deployment history |
 | `artifact_update` | Update container spec (image, env vars, probes) |
+| `artifact_build_trigger` / `artifact_build_logs` | Trigger builds and view build logs |
 | `bundle_list` | See available CPU/GPU resource bundles |
+| `credential_list` / `credential_get` | Work with DataRobot credentials |
 
 ## Claude Desktop Configuration
 
@@ -356,6 +399,45 @@ Then configure Claude Desktop:
 | Tool | Description |
 |------|-------------|
 | `bundle_list` | List compute bundles (CPU/GPU configs) |
+
+### Credentials
+
+Securely inject DataRobot credentials as environment variables into your workloads.
+
+| Tool | Description |
+|------|-------------|
+| `credential_list` | List available credentials with their types and field names |
+| `credential_get` | Get details of a specific credential |
+| `credential_keys` | Show available field names for each credential type |
+
+**Credential Types Supported:**
+- `s3` - AWS S3 credentials (awsAccessKeyId, awsSecretAccessKey, awsSessionToken)
+- `basic` - Basic auth (user, password)
+- `api_token` - API tokens (apiToken)
+- `bearer` - Bearer tokens (token)
+- `gcp` - Google Cloud Platform (gcpKey)
+- `azure_service_principal` - Azure SP (azureTenantId, clientId, clientSecret)
+- `azure` - Azure connection strings (azureConnectionString)
+- `oauth` - OAuth credentials (oauthClientId, oauthClientSecret, etc.)
+- And more...
+
+**Example: Inject S3 credentials into a workload**
+
+```python
+# Using MCP tools via AI assistant
+"Create a workload with S3 credentials injected as environment variables:
+- credential_id: <your-s3-cred-id>
+- AWS_ACCESS_KEY_ID from awsAccessKeyId
+- AWS_SECRET_ACCESS_KEY from awsSecretAccessKey"
+
+# The assistant will use workload_create with:
+credential_env_vars=[
+    {"name": "AWS_ACCESS_KEY_ID", "credential_id": "<id>", "key": "awsAccessKeyId"},
+    {"name": "AWS_SECRET_ACCESS_KEY", "credential_id": "<id>", "key": "awsSecretAccessKey"}
+]
+```
+
+**Note:** Credential field names are dynamically fetched from the DataRobot OpenAPI specification, so all current and future credential types are automatically supported.
 
 ### OTEL (Observability)
 

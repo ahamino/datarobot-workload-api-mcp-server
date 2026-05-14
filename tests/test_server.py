@@ -92,6 +92,84 @@ class TestToolRegistration:
         import wapi_mcp_server
         assert hasattr(wapi_mcp_server, 'read_openapi_spec')
 
+    def test_credential_tools_exist(self):
+        """Test that credential tools are defined."""
+        import wapi_mcp_server
+
+        credential_tools = [
+            'credential_list',
+            'credential_get',
+            'credential_keys',
+        ]
+
+        for tool_name in credential_tools:
+            assert hasattr(wapi_mcp_server, tool_name), f"Missing tool: {tool_name}"
+
+    def test_workload_settings_tools_exist(self):
+        """Test that workload settings tools are defined."""
+        import wapi_mcp_server
+
+        settings_tools = [
+            'workload_settings_get',
+            'workload_settings_update',
+        ]
+
+        for tool_name in settings_tools:
+            assert hasattr(wapi_mcp_server, tool_name), f"Missing tool: {tool_name}"
+
+    def test_workload_stats_tools_exist(self):
+        """Test that workload stats tools are defined."""
+        import wapi_mcp_server
+
+        stats_tools = [
+            'workload_stats',
+            'workloads_stats_summary',
+            'workload_history',
+            'workload_events',
+        ]
+
+        for tool_name in stats_tools:
+            assert hasattr(wapi_mcp_server, tool_name), f"Missing tool: {tool_name}"
+
+    def test_artifact_build_tools_exist(self):
+        """Test that artifact build tools are defined."""
+        import wapi_mcp_server
+
+        build_tools = [
+            'artifact_build_list',
+            'artifact_build_trigger',
+            'artifact_build_get',
+            'artifact_build_logs',
+        ]
+
+        for tool_name in build_tools:
+            assert hasattr(wapi_mcp_server, tool_name), f"Missing tool: {tool_name}"
+
+    def test_workload_management_tools_exist(self):
+        """Test that workload management tools are defined."""
+        import wapi_mcp_server
+
+        management_tools = [
+            'workload_promote',
+            'workload_related',
+        ]
+
+        for tool_name in management_tools:
+            assert hasattr(wapi_mcp_server, tool_name), f"Missing tool: {tool_name}"
+
+    def test_artifact_repo_tools_exist(self):
+        """Test that artifact repository tools are defined."""
+        import wapi_mcp_server
+
+        repo_tools = [
+            'artifact_repo_list',
+            'artifact_repo_get',
+            'artifact_repo_delete',
+        ]
+
+        for tool_name in repo_tools:
+            assert hasattr(wapi_mcp_server, tool_name), f"Missing tool: {tool_name}"
+
 
 class TestToolsAreCallable:
     """Tests that tools are callable functions."""

@@ -509,6 +509,7 @@ async def workload_create(
     memory_bytes: int = 536870912,
     replica_count: int = 1,
     environment_vars: Optional[list[dict]] = None,
+    credential_env_vars: Optional[list[dict]] = None,
     readiness_probe_path: Optional[str] = None,
     liveness_probe_path: Optional[str] = None,
     entrypoint: Optional[list[str]] = None,
@@ -572,6 +573,9 @@ async def workload_create(
         memory_bytes: Memory in bytes (default: 536870912 = 512MB) - used only with inline artifact
         replica_count: Number of replicas (default: 1, ignored if autoscaling enabled)
         environment_vars: MUST BE A LIST like [{"name": "VAR", "value": "val"}]
+        credential_env_vars: Inject DataRobot credentials as env vars. MUST BE A LIST like:
+            [{"name": "AWS_KEY", "credential_id": "<id>", "key": "awsAccessKeyId"}]
+            Use credential_list() to find credential IDs and credential_keys() for key names.
         readiness_probe_path: Health check path (e.g., "/health", "/readyz")
         liveness_probe_path: Liveness check path (e.g., "/health", "/healthz")
         entrypoint: MUST BE A LIST - NEVER guess, look up image docs first!
@@ -688,6 +692,37 @@ async def workload_create(
 
         if environment_vars:
             container["environmentVars"] = environment_vars
+
+        # Process credential environment variables
+        credential_env_vars = parse_json_param(credential_env_vars, "credential_env_vars")
+        if credential_env_vars is not None:
+            if not isinstance(credential_env_vars, list):
+                return f"Error: credential_env_vars must be a list, got {type(credential_env_vars).__name__}"
+
+            # Transform to CredentialEnvironmentVariable schema
+            cred_envs = []
+            for cred_env in credential_env_vars:
+                if not isinstance(cred_env, dict):
+                    return "Error: Each credential_env_var must be a dict with 'name', 'credential_id', 'key'"
+
+                name = cred_env.get("name")
+                cred_id = cred_env.get("credential_id")
+                key = cred_env.get("key")
+
+                if not all([name, cred_id, key]):
+                    return f"Error: credential_env_var missing required fields (name, credential_id, key): {cred_env}"
+
+                cred_envs.append({
+                    "source": "dr-credential",
+                    "name": name,
+                    "drCredentialId": cred_id,
+                    "key": key
+                })
+
+            # Merge with existing environment vars
+            if "environmentVars" not in container:
+                container["environmentVars"] = []
+            container["environmentVars"].extend(cred_envs)
 
         if readiness_probe_path:
             container["readinessProbe"] = {
@@ -2008,6 +2043,269 @@ async def bundle_list() -> str:
   Option 3 - For GPU: workload_create(..., gpu=1, gpu_type="nvidia-l4")"""
 
     return result_str
+
+
+# ---------------------------------------------------------------------------
+# Credentials Tools
+# ---------------------------------------------------------------------------
+
+# Cache for credential schemas fetched from OpenAPI spec
+_credential_schemas_cache: Optional[dict[str, list[str]]] = None
+
+# Fallback credential keys in case OpenAPI fetch fails
+FALLBACK_CREDENTIAL_KEYS = {
+    "s3": ["awsAccessKeyId", "awsSecretAccessKey", "awsSessionToken"],
+    "basic": ["user", "password"],
+    "azure_service_principal": ["azureTenantId", "clientId", "clientSecret"],
+    "gcp": ["gcpKey"],
+    "api_token": ["apiToken"],
+    "bearer": ["token"],
+    "oauth": ["oauthClientId", "oauthClientSecret", "oauthAccessToken", "oauthRefreshToken"],
+    "azure": ["azureConnectionString"],
+    "azure_sas": ["sasToken"],
+    "snowflake_key_pair_user_account": ["privateKeyStr", "passphrase", "user"],
+    "databricks_access_token_account": ["databricksAccessToken"],
+}
+
+
+async def get_credential_schemas() -> dict[str, list[str]]:
+    """Fetch credential schemas from OpenAPI spec and extract field names.
+
+    Returns:
+        Dictionary mapping credential type to list of available field names
+    """
+    global _credential_schemas_cache
+
+    # Return cached value if available
+    if _credential_schemas_cache is not None:
+        return _credential_schemas_cache
+
+    try:
+        client = await get_client()
+
+        # Construct OpenAPI spec URL from base_url
+        openapi_url = f"{client.base_url}/openapi.yaml"
+        LOG.info(f"Fetching OpenAPI spec from {openapi_url}")
+
+        # Fetch OpenAPI spec
+        import aiohttp
+        async with aiohttp.ClientSession() as session:
+            async with session.get(openapi_url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                if resp.status != 200:
+                    LOG.warning(f"Failed to fetch OpenAPI spec: HTTP {resp.status}")
+                    _credential_schemas_cache = FALLBACK_CREDENTIAL_KEYS
+                    return _credential_schemas_cache
+
+                spec_text = await resp.text()
+
+        # Parse YAML
+        spec = yaml.safe_load(spec_text)
+
+        # Extract credential schemas from components/schemas
+        schemas = spec.get("components", {}).get("schemas", {})
+        credential_schemas = {}
+
+        # Look for all credential-related schemas
+        for schema_name, schema_def in schemas.items():
+            # Credential schemas typically have "Credential" in the name or have credentialType property
+            if not isinstance(schema_def, dict):
+                continue
+
+            # Check if this looks like a credential schema
+            properties = schema_def.get("properties", {})
+
+            # Pattern 1: Schema has credentialType property (credential response schemas)
+            if "credentialType" in properties:
+                # Get the credential type from enum if available
+                cred_type_prop = properties.get("credentialType", {})
+                if "enum" in cred_type_prop and len(cred_type_prop["enum"]) == 1:
+                    cred_type = cred_type_prop["enum"][0]
+                    # Extract all property names except metadata fields
+                    field_names = [
+                        prop_name for prop_name in properties.keys()
+                        if prop_name not in [
+                            "credentialId", "credentialType", "name", "description",
+                            "creationDate", "creator", "role"
+                        ]
+                    ]
+                    if field_names:
+                        credential_schemas[cred_type] = field_names
+
+            # Pattern 2: Schema name ends with "Credential" or "Credentials" (input schemas)
+            elif schema_name.endswith("Credential") or schema_name.endswith("Credentials"):
+                # Try to infer credential type from schema name
+                # e.g., S3Credentials -> s3, BasicCredential -> basic
+                cred_type = schema_name.replace("Credentials", "").replace("Credential", "")
+                cred_type = cred_type.lower()
+
+                # Convert camelCase to snake_case
+                import re
+                cred_type = re.sub(r'(?<!^)(?=[A-Z])', '_', cred_type).lower()
+
+                # Extract property names
+                field_names = list(properties.keys())
+                if field_names:
+                    credential_schemas[cred_type] = field_names
+
+        if credential_schemas:
+            LOG.info(f"Extracted {len(credential_schemas)} credential schemas from OpenAPI spec")
+            _credential_schemas_cache = credential_schemas
+        else:
+            LOG.warning("No credential schemas found in OpenAPI spec, using fallback")
+            _credential_schemas_cache = FALLBACK_CREDENTIAL_KEYS
+
+    except Exception as e:
+        LOG.warning(f"Failed to fetch credential schemas from OpenAPI spec: {e}")
+        _credential_schemas_cache = FALLBACK_CREDENTIAL_KEYS
+
+    return _credential_schemas_cache
+
+
+@mcp.tool()
+@traced_tool
+async def credential_list(
+    limit: int = 50,
+    credential_type: Optional[str] = None,
+) -> str:
+    """List available DataRobot credentials that can be injected into workloads.
+
+    Credentials are securely stored secrets (API keys, passwords, tokens) that can be
+    injected as environment variables in workload containers. Use credential_keys()
+    to see what keys are available for each credential type.
+
+    Args:
+        limit: Maximum number of credentials to return (default: 50)
+        credential_type: Filter by type (s3, basic, gcp, api_token, bearer, oauth, etc.)
+
+    Returns:
+        List of credentials with ID, name, and type
+    """
+    client = await get_client()
+
+    types = [credential_type] if credential_type else None
+    result = await client.list_credentials(limit=limit, types=types)
+
+    data = result.get("data", [])
+
+    if not data:
+        return "No credentials found. Create credentials in DataRobot's Credentials page first."
+
+    # Fetch credential schemas from OpenAPI spec
+    credential_schemas = await get_credential_schemas()
+
+    output = f"Found {len(data)} credentials:\n\n"
+
+    for cred in data:
+        cred_id = cred.get("credentialId", "")
+        name = cred.get("name", "")
+        cred_type = cred.get("credentialType", "unknown")
+        desc = cred.get("description", "")
+
+        output += f"- {name}\n"
+        output += f"  ID: {cred_id}\n"
+        output += f"  Type: {cred_type}\n"
+        if desc:
+            output += f"  Description: {desc}\n"
+
+        # Show available keys for this credential type
+        keys = credential_schemas.get(cred_type, [])
+        if keys:
+            output += f"  Available keys: {', '.join(keys)}\n"
+        output += "\n"
+
+    output += """USAGE: To inject a credential as an environment variable in workload_create:
+
+  credential_env_vars=[
+      {"name": "AWS_ACCESS_KEY_ID", "credential_id": "<id>", "key": "awsAccessKeyId"},
+      {"name": "AWS_SECRET_ACCESS_KEY", "credential_id": "<id>", "key": "awsSecretAccessKey"}
+  ]"""
+
+    return output
+
+
+@mcp.tool()
+@traced_tool
+async def credential_get(credential_id: str) -> str:
+    """Get details of a specific credential.
+
+    Args:
+        credential_id: The credential ID
+
+    Returns:
+        Credential details including available keys for injection
+    """
+    client = await get_client()
+    cred = await client.get_credential(credential_id)
+
+    # Fetch credential schemas from OpenAPI spec
+    credential_schemas = await get_credential_schemas()
+
+    cred_id = cred.get("credentialId", "")
+    name = cred.get("name", "")
+    cred_type = cred.get("credentialType", "unknown")
+    desc = cred.get("description", "")
+    created = cred.get("creationDate", "")
+
+    output = f"Credential: {name}\n"
+    output += f"ID: {cred_id}\n"
+    output += f"Type: {cred_type}\n"
+    if desc:
+        output += f"Description: {desc}\n"
+    output += f"Created: {created}\n\n"
+
+    # Show available keys
+    keys = credential_schemas.get(cred_type, [])
+    if keys:
+        output += "Available keys for injection:\n"
+        for key in keys:
+            output += f"  - {key}\n"
+
+        output += "\nExample environment variable injection:\n"
+        output += f'  {{"name": "MY_SECRET", "credential_id": "{cred_id}", "key": "{keys[0]}"}}'
+    else:
+        output += f"No known keys for credential type '{cred_type}'"
+
+    return output
+
+
+@mcp.tool()
+@traced_tool
+async def credential_keys() -> str:
+    """Show available keys for each credential type.
+
+    When injecting credentials as environment variables, you need to specify
+    which 'key' (field) from the credential to use.
+
+    Returns:
+        Mapping of credential types to their available keys
+    """
+    # Fetch credential schemas from OpenAPI spec
+    credential_schemas = await get_credential_schemas()
+
+    output = "Credential Types and Available Keys:\n\n"
+
+    for cred_type, keys in credential_schemas.items():
+        output += f"{cred_type}:\n"
+        for key in keys:
+            output += f"  - {key}\n"
+        output += "\n"
+
+    output += """USAGE in workload_create:
+
+credential_env_vars=[
+    # S3 credentials example
+    {"name": "AWS_ACCESS_KEY_ID", "credential_id": "<s3-cred-id>", "key": "awsAccessKeyId"},
+    {"name": "AWS_SECRET_ACCESS_KEY", "credential_id": "<s3-cred-id>", "key": "awsSecretAccessKey"},
+
+    # Basic auth example
+    {"name": "DB_USER", "credential_id": "<basic-cred-id>", "key": "user"},
+    {"name": "DB_PASSWORD", "credential_id": "<basic-cred-id>", "key": "password"},
+
+    # API token example
+    {"name": "API_KEY", "credential_id": "<api-token-cred-id>", "key": "apiToken"},
+]"""
+
+    return output
 
 
 # ---------------------------------------------------------------------------

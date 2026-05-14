@@ -687,6 +687,34 @@ class WapiClient:
             "GET", f"/api/v2/otel/workload/{workload_id}/metrics/autocollectedValues/", params=params
         )
 
+    # -------------------- Credentials ------------------------------------
+    #
+    # DataRobot credentials can be injected as environment variables in workloads.
+    # Use CredentialEnvironmentVariable with source="dr-credential".
+
+    async def list_credentials(
+        self,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+        types: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """List available DataRobot credentials.
+
+        Args:
+            limit: Maximum number of results
+            offset: Number of results to skip
+            types: Filter by credential types (e.g., ["s3", "basic", "gcp"])
+        """
+        params: Dict[str, Any] = {"limit": limit, "offset": offset}
+        if types:
+            params["types"] = types
+        return await self.request("GET", "/api/v2/credentials/", params=params)
+
+    async def get_credential(self, credential_id: str) -> Dict[str, Any]:
+        """Get a credential by ID."""
+        return await self.request("GET", f"/api/v2/credentials/{credential_id}/")
+
     # -------------------- Cleanup --------------------------------------
 
     async def close(self) -> None:
