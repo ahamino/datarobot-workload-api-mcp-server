@@ -95,7 +95,6 @@ curl -X POST "${DATAROBOT_API_ENDPOINT}/workloads/" \
             "imageUri": "ghcr.io/ahamino/datarobot-workload-api-mcp-server:latest",
             "port": 8000,
             "primary": true,
-            "resourceRequest": {"cpu": 2, "memory": "4GB"},
             "environmentVars": [
               {"name": "DATAROBOT_API_ENDPOINT", "value": "'"${DATAROBOT_API_ENDPOINT}"'"},
               {
@@ -114,7 +113,11 @@ curl -X POST "${DATAROBOT_API_ENDPOINT}/workloads/" \
     "runtime": {
       "containerGroups": [{
         "name": "default",
-        "replicaCount": 1
+        "replicaCount": 1,
+        "containers": [{
+          "name": "main",
+          "resourceAllocation": {"cpu": 2, "memory": "4GB"}
+        }]
       }]
     }
   }'
@@ -160,7 +163,6 @@ curl -X PATCH "${DATAROBOT_API_ENDPOINT}/artifacts/${ARTIFACT_ID}/" \
           "imageUri": "ghcr.io/ahamino/datarobot-workload-api-mcp-server:v2",
           "port": 8000,
           "primary": true,
-          "resourceRequest": {"cpu": 2, "memory": "4GB"},
           "environmentVars": [
             {"name": "DATAROBOT_API_ENDPOINT", "value": "'"${DATAROBOT_API_ENDPOINT}"'"},
             {

@@ -697,18 +697,18 @@ async def workload_create(
         payload["artifactId"] = artifact_id
     else:
         # Create inline artifact
-        resource_request: dict = {"cpu": cpu, "memory": memory_bytes}
+        # Build resource allocation for runtime (NOT in artifact spec)
+        resource_allocation: dict = {"cpu": cpu, "memory": memory_bytes}
         if gpu is not None and gpu > 0:
-            resource_request["gpu"] = gpu
+            resource_allocation["gpu"] = gpu
             if gpu_type:
-                resource_request["gpuType"] = gpu_type
+                resource_allocation["gpuType"] = gpu_type
 
         container: dict = {
             "name": "main",
             "imageUri": image_uri,
             "port": port,
             "primary": True,
-            "resourceRequest": resource_request,
         }
 
         if entrypoint:
@@ -771,6 +771,14 @@ async def workload_create(
                 }]
             },
         }
+
+        # Add resource allocation to runtime section
+        if "containers" not in runtime["containerGroups"][0]:
+            runtime["containerGroups"][0]["containers"] = []
+        runtime["containerGroups"][0]["containers"].append({
+            "name": "main",
+            "resourceAllocation": resource_allocation
+        })
 
     workload = await client.create_workload(payload)
     workload_id = workload.get("id")
