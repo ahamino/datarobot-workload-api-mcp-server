@@ -144,32 +144,39 @@ async def get_client() -> WapiClient:
 
 
 def traced_tool(func):
-    """Decorator to add logging, metrics, and error handling to MCP tools."""
+    """Decorator to add logging, metrics, tracing, and error handling to MCP tools."""
     @wraps(func)
     async def wrapper(*args, **kwargs):
         tool_name = func.__name__
         start_time = time.time()
         LOG.info(f"Tool call: {tool_name}")
 
-        try:
-            result = await func(*args, **kwargs)
-            duration_ms = (time.time() - start_time) * 1000
-            record_tool_call(tool_name, "success", duration_ms)
-            LOG.info(f"Tool {tool_name} completed in {duration_ms:.1f}ms")
-            return result
+        with trace_span(f"tool/{tool_name}", {"tool.name": tool_name}) as span:
+            try:
+                result = await func(*args, **kwargs)
+                duration_ms = (time.time() - start_time) * 1000
+                record_tool_call(tool_name, "success", duration_ms)
+                if span:
+                    span.set_attribute("tool.status", "success")
+                    span.set_attribute("tool.duration_ms", duration_ms)
+                LOG.info(f"Tool {tool_name} completed in {duration_ms:.1f}ms")
+                return result
 
-        except Exception as e:
-            duration_ms = (time.time() - start_time) * 1000
-            error_type = type(e).__name__
-            record_tool_call(tool_name, "error", duration_ms, error_type)
-            LOG.error(f"Tool {tool_name} failed after {duration_ms:.1f}ms: {e}")
+            except Exception as e:
+                duration_ms = (time.time() - start_time) * 1000
+                error_type = type(e).__name__
+                record_tool_call(tool_name, "error", duration_ms, error_type)
+                if span:
+                    span.set_attribute("tool.status", "error")
+                    span.set_attribute("tool.error_type", error_type)
+                LOG.error(f"Tool {tool_name} failed after {duration_ms:.1f}ms: {e}")
 
-            # Return formatted error message instead of raising
-            from wapi_mcp.exceptions import WapiAPIError
-            if isinstance(e, WapiAPIError):
-                return f"API ERROR in {tool_name}:\n\n{str(e)}"
-            else:
-                return f"ERROR in {tool_name}: {error_type}: {str(e)}"
+                # Return formatted error message instead of raising
+                from wapi_mcp.exceptions import WapiAPIError
+                if isinstance(e, WapiAPIError):
+                    return f"API ERROR in {tool_name}:\n\n{str(e)}"
+                else:
+                    return f"ERROR in {tool_name}: {error_type}: {str(e)}"
 
     return wrapper
 
