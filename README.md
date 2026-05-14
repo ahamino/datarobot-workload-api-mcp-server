@@ -88,7 +88,10 @@ curl -X POST "${DATAROBOT_API_ENDPOINT}/workloads/" \
       "containerGroups": [{
         "name": "default",
         "replicaCount": 1,
-        "resourceBundles": ["cpu.medium"]
+        "containers": [{
+          "name": "main",
+          "resourceAllocation": {"cpu": 1, "memory": "1GB"}
+        }]
       }]
     }
   }'
