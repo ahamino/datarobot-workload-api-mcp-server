@@ -87,12 +87,12 @@ curl -X POST "${DATAROBOT_API_ENDPOINT}/workloads/" \
       "spec": {
         "type": "service",
         "containerGroups": [{
-          "name": "default",
           "containers": [{
             "name": "main",
             "imageUri": "ghcr.io/ahamino/datarobot-workload-api-mcp-server:latest",
             "port": 8000,
             "primary": true,
+            "resourceRequest": {"cpu": 2, "memory": "4GB"},
             "environmentVars": [
               {"name": "DATAROBOT_API_ENDPOINT", "value": "'"${DATAROBOT_API_ENDPOINT}"'"},
               {
@@ -111,11 +111,7 @@ curl -X POST "${DATAROBOT_API_ENDPOINT}/workloads/" \
     "runtime": {
       "containerGroups": [{
         "name": "default",
-        "replicaCount": 1,
-        "containers": [{
-          "name": "main",
-          "resourceAllocation": {"cpu": 2, "memory": "4GB"}
-        }]
+        "replicaCount": 1
       }]
     }
   }'
@@ -156,12 +152,12 @@ curl -X PATCH "${DATAROBOT_API_ENDPOINT}/artifacts/${ARTIFACT_ID}/" \
     "description": "WAPI MCP Server - iteration 2",
     "spec": {
       "containerGroups": [{
-        "name": "default",
         "containers": [{
           "name": "main",
           "imageUri": "ghcr.io/ahamino/datarobot-workload-api-mcp-server:v2",
           "port": 8000,
           "primary": true,
+          "resourceRequest": {"cpu": 2, "memory": "4GB"},
           "environmentVars": [
             {"name": "DATAROBOT_API_ENDPOINT", "value": "'"${DATAROBOT_API_ENDPOINT}"'"},
             {
