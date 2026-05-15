@@ -2535,7 +2535,11 @@ async def otel_trace_get(workload_id: str, trace_id: str) -> str:
         status_icon = "X" if status == "ERROR" else "ok"
         output += f"[{status_icon}] {service}/{span_name} ({kind}) - {span_duration:.1f}ms\n"
 
-        important_attrs = ["http.method", "http.url", "http.status_code", "db.statement", "error.message"]
+        important_attrs = [
+            "http.method", "http.url", "http.status_code",
+            "db.statement", "error.message",
+            "tool.name", "tool.input", "tool.output", "tool.status"
+        ]
         for attr in important_attrs:
             if attr in attributes:
                 output += f"    {attr}: {attributes[attr]}\n"

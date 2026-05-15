@@ -666,3 +666,303 @@ class TestArtifactDeleteAndCloneTools:
         mock_client.patch_artifact.assert_called_once()
 
 
+class TestWorkloadCoreTools:
+    """Unit tests for core workload tools."""
+
+    @pytest.mark.asyncio
+    async def test_workload_create(self):
+        """Test workload_create tool."""
+        import wapi_mcp_server as mcp
+
+        mock_client = AsyncMock()
+        mock_client.create_workload = AsyncMock(return_value={
+            "id": "wkld123",
+            "name": "test-workload",
+            "status": "submitted",
+            "artifactId": "art123",
+            "endpoint": ""
+        })
+        mock_client._build_url = lambda path: f"https://example.com{path}"
+
+        with patch('wapi_mcp_server.get_client', return_value=mock_client):
+            result = await mcp.workload_create(
+                name="test-workload",
+                image_uri="nginx:latest",
+                port=8080
+            )
+
+        assert isinstance(result, str)
+        assert "wkld123" in result
+        assert "submitted" in result
+        mock_client.create_workload.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_workload_get(self):
+        """Test workload_get tool."""
+        import wapi_mcp_server as mcp
+
+        mock_client = AsyncMock()
+        mock_client.get_workload = AsyncMock(return_value={
+            "id": "wkld123",
+            "name": "test-workload",
+            "status": "running",
+            "artifactId": "art123",
+            "importance": "high",
+            "description": "Test workload",
+            "createdAt": "2024-01-15T10:00:00Z",
+            "endpoint": "https://example.com/workloads/wkld123",
+            "runtime": {
+                "containerGroups": [{
+                    "replicaCount": 2,
+                    "resourceBundles": ["cpu.medium"]
+                }]
+            }
+        })
+        mock_client._build_url = lambda path: f"https://example.com{path}"
+
+        with patch('wapi_mcp_server.get_client', return_value=mock_client):
+            result = await mcp.workload_get("wkld123")
+
+        assert isinstance(result, str)
+        assert "test-workload" in result
+        assert "running" in result
+        assert "wkld123" in result
+        mock_client.get_workload.assert_called_once_with("wkld123")
+
+    @pytest.mark.asyncio
+    async def test_workload_status(self):
+        """Test workload_status tool."""
+        import wapi_mcp_server as mcp
+
+        mock_client = AsyncMock()
+        mock_client.get_workload = AsyncMock(return_value={
+            "id": "wkld123",
+            "name": "test-workload",
+            "status": "running",
+            "statusDetails": {
+                "logTail": [
+                    "INFO: Application started",
+                    "INFO: Listening on port 8000"
+                ]
+            }
+        })
+
+        with patch('wapi_mcp_server.get_client', return_value=mock_client):
+            result = await mcp.workload_status("wkld123")
+
+        assert isinstance(result, str)
+        assert "test-workload" in result
+        assert "running" in result.lower()
+        mock_client.get_workload.assert_called_once_with("wkld123")
+
+    @pytest.mark.asyncio
+    async def test_workload_start(self):
+        """Test workload_start tool."""
+        import wapi_mcp_server as mcp
+
+        mock_client = AsyncMock()
+        mock_client.start_workload = AsyncMock(return_value={
+            "id": "wkld123",
+            "status": "starting"
+        })
+
+        with patch('wapi_mcp_server.get_client', return_value=mock_client):
+            result = await mcp.workload_start("wkld123", wait_for_running=False)
+
+        assert isinstance(result, str)
+        assert "start" in result.lower()
+        mock_client.start_workload.assert_called_once_with("wkld123")
+
+    @pytest.mark.asyncio
+    async def test_workload_update(self):
+        """Test workload_update tool."""
+        import wapi_mcp_server as mcp
+
+        mock_client = AsyncMock()
+        mock_client.patch_workload = AsyncMock(return_value={
+            "id": "wkld123",
+            "name": "updated-workload",
+            "description": "Updated description",
+            "importance": "high",
+            "status": "running"
+        })
+
+        with patch('wapi_mcp_server.get_client', return_value=mock_client):
+            result = await mcp.workload_update(
+                "wkld123",
+                name="updated-workload",
+                description="Updated description",
+                importance="high"
+            )
+
+        assert isinstance(result, str)
+        assert "updated-workload" in result.lower()
+        assert "high" in result.lower()
+        mock_client.patch_workload.assert_called_once()
+
+
+class TestArtifactCoreTools:
+    """Unit tests for core artifact tools."""
+
+    @pytest.mark.asyncio
+    async def test_artifact_create(self):
+        """Test artifact_create tool."""
+        import wapi_mcp_server as mcp
+
+        mock_client = AsyncMock()
+        mock_client.create_artifact = AsyncMock(return_value={
+            "id": "art123",
+            "name": "test-artifact",
+            "status": "draft",
+            "spec": {
+                "type": "service",
+                "containerGroups": [{
+                    "containers": [{
+                        "imageUri": "nginx:latest",
+                        "port": 8080
+                    }]
+                }]
+            }
+        })
+
+        with patch('wapi_mcp_server.get_client', return_value=mock_client):
+            result = await mcp.artifact_create(
+                name="test-artifact",
+                image_uri="nginx:latest",
+                port=8080
+            )
+
+        assert isinstance(result, str)
+        assert "art123" in result
+        assert "test-artifact" in result
+        assert "draft" in result.lower()
+        mock_client.create_artifact.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_artifact_get(self):
+        """Test artifact_get tool."""
+        import wapi_mcp_server as mcp
+
+        mock_client = AsyncMock()
+        mock_client.get_artifact = AsyncMock(return_value={
+            "id": "art123",
+            "name": "test-artifact",
+            "status": "locked",
+            "spec": {
+                "type": "service",
+                "containerGroups": [{
+                    "containers": [{
+                        "imageUri": "nginx:latest"
+                    }]
+                }]
+            }
+        })
+
+        with patch('wapi_mcp_server.get_client', return_value=mock_client):
+            result = await mcp.artifact_get("art123")
+
+        assert isinstance(result, str)
+        assert "art123" in result
+        mock_client.get_artifact.assert_called_once_with("art123")
+
+    @pytest.mark.asyncio
+    async def test_artifact_update(self):
+        """Test artifact_update tool."""
+        import wapi_mcp_server as mcp
+
+        mock_client = AsyncMock()
+        mock_client.get_artifact = AsyncMock(return_value={
+            "id": "art123",
+            "status": "draft",
+            "spec": {
+                "containerGroups": [{
+                    "containers": [{
+                        "name": "main",
+                        "imageUri": "nginx:latest",
+                        "port": 8080,
+                        "primary": True,
+                        "environmentVars": []
+                    }]
+                }]
+            }
+        })
+        mock_client.patch_artifact = AsyncMock(return_value={
+            "id": "art123",
+            "status": "draft"
+        })
+
+        with patch('wapi_mcp_server.get_client', return_value=mock_client):
+            result = await mcp.artifact_update(
+                "art123",
+                image_uri="nginx:alpine"
+            )
+
+        assert isinstance(result, str)
+        assert "updated" in result.lower() or "art123" in result
+        mock_client.get_artifact.assert_called_once_with("art123")
+        mock_client.patch_artifact.assert_called_once()
+
+
+class TestOTELTraceTools:
+    """Unit tests for OTEL trace tools."""
+
+    @pytest.mark.asyncio
+    async def test_otel_traces(self):
+        """Test otel_traces tool."""
+        import wapi_mcp_server as mcp
+
+        mock_client = AsyncMock()
+        mock_client.list_otel_traces = AsyncMock(return_value={
+            "data": [
+                {
+                    "traceId": "trace123",
+                    "spanCount": 5,
+                    "duration": 150,
+                    "timestamp": "2024-01-15T10:00:00Z"
+                },
+                {
+                    "traceId": "trace456",
+                    "spanCount": 3,
+                    "duration": 75,
+                    "timestamp": "2024-01-15T10:01:00Z"
+                }
+            ]
+        })
+
+        with patch('wapi_mcp_server.get_client', return_value=mock_client):
+            result = await mcp.otel_traces("wkld123")
+
+        assert isinstance(result, str)
+        assert "trace123" in result or "trace" in result.lower()
+        mock_client.list_otel_traces.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_otel_trace_get(self):
+        """Test otel_trace_get tool."""
+        import wapi_mcp_server as mcp
+
+        mock_client = AsyncMock()
+        mock_client.get_otel_trace = AsyncMock(return_value={
+            "traceId": "trace123",
+            "spans": [
+                {
+                    "spanId": "span1",
+                    "name": "HTTP GET /api",
+                    "duration": 50
+                },
+                {
+                    "spanId": "span2",
+                    "name": "Database query",
+                    "duration": 100
+                }
+            ]
+        })
+
+        with patch('wapi_mcp_server.get_client', return_value=mock_client):
+            result = await mcp.otel_trace_get("wkld123", "trace123")
+
+        assert isinstance(result, str)
+        assert "trace123" in result or "span" in result.lower()
+        mock_client.get_otel_trace.assert_called_once_with("wkld123", "trace123")
+
+

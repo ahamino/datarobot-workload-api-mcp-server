@@ -4,6 +4,49 @@ MCP server for the DataRobot Workload API. Manage workloads, artifacts, artifact
 
 Built with [FastMCP](https://github.com/jlowin/fastmcp) for clean, decorator-based tool definitions.
 
+## Installation
+
+### Prerequisites
+
+- Python 3.11 or higher
+- pip
+- Docker (optional, for containerized deployment)
+
+### From Source
+
+1. Clone the repository:
+```bash
+git clone https://github.com/yourusername/wapi-mcp-server.git
+cd wapi-mcp-server
+```
+
+2. Install dependencies:
+```bash
+pip install -r requirements.txt
+```
+
+3. Set environment variables:
+```bash
+export DATAROBOT_API_ENDPOINT="https://your-datarobot-instance.com/api/v2"
+export DATAROBOT_API_TOKEN="your-api-token"
+```
+
+4. Run the server:
+```bash
+python wapi_mcp_server.py
+```
+
+### Using Docker
+
+Build and run using Docker:
+```bash
+docker build -t wapi-mcp-server .
+docker run -p 8000:8000 \
+  -e DATAROBOT_API_ENDPOINT="$DATAROBOT_API_ENDPOINT" \
+  -e DATAROBOT_API_TOKEN="$DATAROBOT_API_TOKEN" \
+  wapi-mcp-server
+```
+
 ## Quick Start
 
 ### Environment Variables
@@ -28,6 +71,62 @@ docker run -p 8000:8000 \
   -e DATAROBOT_API_ENDPOINT="$DATAROBOT_API_ENDPOINT" \
   -e DATAROBOT_API_TOKEN="$DATAROBOT_API_TOKEN" \
   wapi-mcp-server
+```
+
+## Usage Examples
+
+This MCP server provides tools that can be used through AI assistants like Claude. Here are some common workflows:
+
+### List Available Workloads
+
+```
+User: "Show me all running workloads"
+Assistant uses: workload_list(status="running")
+```
+
+### Create a New Workload
+
+```
+User: "Create a workload running nginx:latest on port 8080"
+Assistant uses: workload_create(name="my-nginx", image_uri="nginx:latest", port=8080)
+```
+
+### Debug a Failing Workload
+
+```
+User: "Why is workload abc123 failing?"
+Assistant uses:
+  1. workload_status("abc123") - Check status and K8s diagnostics
+  2. proton_list("abc123") - List deployment instances
+  3. proton_status_details("abc123", "proton_id") - Get detailed K8s conditions
+  4. otel_logs("abc123") - View application logs
+```
+
+### Monitor Workload Performance
+
+```
+User: "Show me performance metrics for workload abc123"
+Assistant uses:
+  1. workload_stats("abc123") - CPU, memory, request metrics
+  2. otel_metrics("abc123") - OpenTelemetry metrics
+  3. otel_traces("abc123") - Recent request traces
+```
+
+### Manage Artifact Lifecycle
+
+```
+User: "Update the image in artifact xyz789 to nginx:alpine and lock it"
+Assistant uses:
+  1. artifact_get("xyz789") - View current artifact spec
+  2. artifact_update("xyz789", image_uri="nginx:alpine") - Update image
+  3. artifact_lock("xyz789") - Lock artifact for production
+```
+
+### Search for Resources
+
+```
+User: "Find all artifacts using the python:3.11 image"
+Assistant uses: artifact_search(image_uri="python:3.11")
 ```
 
 ## Deploy to DataRobot
