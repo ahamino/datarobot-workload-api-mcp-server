@@ -305,19 +305,48 @@ class TestProtonTools:
         mock_client.list_workload_protons = AsyncMock(return_value={
             "data": [
                 {
-                    "id": "proton123",
-                    "name": "workload-abc-1",
-                    "status": "running"
+                    "id": "proton123456",
+                    "artifactId": "art123456789",
+                    "status": "running",
+                    "role": "primary",
+                    "createdAt": "2024-01-15T10:00:00Z",
+                },
+                {
+                    "id": "proton789012",
+                    "artifactId": "art987654321",
+                    "status": "stopped",
+                    "role": "",
+                    "createdAt": "2024-01-14T10:00:00Z",
                 }
-            ]
+            ],
+            "totalCount": 2
         })
 
         with patch('wapi_mcp_server.get_client', return_value=mock_client):
-            result = await mcp.proton_list("wkld123", limit=10)
+            result = await mcp.proton_list("wkld123")
 
         assert isinstance(result, str)
-        assert "proton" in result.lower()
+        assert "Found 2 protons" in result
+        assert "proton123456" in result or "proton123456"[:12] in result
+        assert "art123456789" in result or "art123456789"[:12] in result
         mock_client.list_workload_protons.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_proton_list_empty(self):
+        """Test proton_list with no protons."""
+        import wapi_mcp_server as mcp
+
+        mock_client = AsyncMock()
+        mock_client.list_workload_protons = AsyncMock(return_value={
+            "data": [],
+            "totalCount": 0
+        })
+
+        with patch('wapi_mcp_server.get_client', return_value=mock_client):
+            result = await mcp.proton_list("wkld123")
+
+        assert isinstance(result, str)
+        assert "No protons found" in result
 
     @pytest.mark.asyncio
     async def test_proton_get(self):
@@ -346,9 +375,35 @@ class TestProtonTools:
 
         mock_client = AsyncMock()
         mock_client.get_proton_status_details = AsyncMock(return_value={
+            "overallStatus": {
+                "state": "running",
+                "summary": "All containers are running",
+                "lastUpdated": "2024-01-15T10:00:00Z"
+            },
             "replicas": [
-                {"name": "replica-1", "status": "running"},
-                {"name": "replica-2", "status": "running"}
+                {
+                    "name": "replica-1",
+                    "status": "running",
+                    "address": "10.0.0.1",
+                    "nodeAddress": "node-1",
+                    "startedAt": "2024-01-15T09:00:00Z",
+                    "conditions": [
+                        {"type": "Ready", "met": True, "since": "5m"},
+                        {"type": "ContainersReady", "met": True, "since": "5m"},
+                        {"type": "Initialized", "met": True, "since": "10m"},
+                        {"type": "PodScheduled", "met": True, "since": "10m"}
+                    ],
+                    "containers": [
+                        {
+                            "name": "main",
+                            "status": "running",
+                            "ready": True,
+                            "restartCount": 0,
+                            "image": "ghcr.io/test/image:latest",
+                            "startedAt": "2024-01-15T09:00:00Z"
+                        }
+                    ]
+                }
             ]
         })
 
@@ -356,8 +411,88 @@ class TestProtonTools:
             result = await mcp.proton_status_details("wkld123", "proton123")
 
         assert isinstance(result, str)
-        assert "replica" in result.lower()
-        mock_client.get_proton_status_details.assert_called_once()
+        assert "running" in result.lower()
+        assert "Ready" in result
+        assert "ContainersReady" in result
+        assert "main" in result
+        assert "[OK]" in result  # Check marks for met conditions
+        mock_client.get_proton_status_details.assert_called_once_with("wkld123", "proton123")
+
+    @pytest.mark.asyncio
+    async def test_proton_status_details_with_issues(self):
+        """Test proton_status_details with container issues."""
+        import wapi_mcp_server as mcp
+
+        mock_client = AsyncMock()
+        mock_client.get_proton_status_details = AsyncMock(return_value={
+            "overallStatus": {
+                "state": "errored",
+                "summary": "Container is failing",
+                "lastUpdated": "2024-01-15T10:00:00Z"
+            },
+            "replicas": [
+                {
+                    "name": "replica-1",
+                    "status": "failed",
+                    "address": "",
+                    "nodeAddress": "",
+                    "startedAt": "",
+                    "conditions": [
+                        {"type": "Ready", "met": False, "since": ""},
+                        {"type": "ContainersReady", "met": False, "since": ""}
+                    ],
+                    "containers": [
+                        {
+                            "name": "main",
+                            "status": "waiting",
+                            "ready": False,
+                            "restartCount": 5,
+                            "image": "ghcr.io/test/image:latest"
+                        }
+                    ]
+                }
+            ]
+        })
+
+        with patch('wapi_mcp_server.get_client', return_value=mock_client):
+            result = await mcp.proton_status_details("wkld123", "proton123")
+
+        assert isinstance(result, str)
+        assert "errored" in result.lower() or "failed" in result.lower()
+        assert "[--]" in result  # Dash marks for unmet conditions
+        assert "restarts: 5" in result.lower()
+        assert "waiting" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_proton_status_details_no_content(self):
+        """Test proton_status_details with 204 No Content response."""
+        import wapi_mcp_server as mcp
+
+        mock_client = AsyncMock()
+        mock_client.get_proton_status_details = AsyncMock(
+            side_effect=Exception("204 No content")
+        )
+
+        with patch('wapi_mcp_server.get_client', return_value=mock_client):
+            result = await mcp.proton_status_details("wkld123", "proton123")
+
+        assert isinstance(result, str)
+        assert "No status details available" in result
+        assert "initializing" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_proton_status_details_empty_response(self):
+        """Test proton_status_details with empty response."""
+        import wapi_mcp_server as mcp
+
+        mock_client = AsyncMock()
+        mock_client.get_proton_status_details = AsyncMock(return_value={})
+
+        with patch('wapi_mcp_server.get_client', return_value=mock_client):
+            result = await mcp.proton_status_details("wkld123", "proton123")
+
+        assert isinstance(result, str)
+        assert "No status details available" in result
 
 
 class TestOpenAPITool:
@@ -531,183 +666,3 @@ class TestArtifactDeleteAndCloneTools:
         mock_client.patch_artifact.assert_called_once()
 
 
-class TestProtonTools:
-    """Unit tests for proton-related tools."""
-
-    @pytest.mark.asyncio
-    async def test_proton_list(self):
-        """Test proton_list tool."""
-        import wapi_mcp_server as mcp
-
-        mock_client = AsyncMock()
-        mock_client.list_workload_protons = AsyncMock(return_value={
-            "data": [
-                {
-                    "id": "proton123456",
-                    "artifactId": "art123456789",
-                    "status": "running",
-                    "role": "primary",
-                    "createdAt": "2024-01-15T10:00:00Z",
-                },
-                {
-                    "id": "proton789012",
-                    "artifactId": "art987654321",
-                    "status": "stopped",
-                    "role": "",
-                    "createdAt": "2024-01-14T10:00:00Z",
-                }
-            ],
-            "totalCount": 2
-        })
-
-        with patch('wapi_mcp_server.get_client', return_value=mock_client):
-            result = await mcp.proton_list("wkld123")
-
-        assert isinstance(result, str)
-        assert "Found 2 protons" in result
-        assert "proton123456" in result or "proton123456"[:12] in result
-        assert "art123456789" in result or "art123456789"[:12] in result
-        mock_client.list_workload_protons.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_proton_list_empty(self):
-        """Test proton_list with no protons."""
-        import wapi_mcp_server as mcp
-
-        mock_client = AsyncMock()
-        mock_client.list_workload_protons = AsyncMock(return_value={
-            "data": [],
-            "totalCount": 0
-        })
-
-        with patch('wapi_mcp_server.get_client', return_value=mock_client):
-            result = await mcp.proton_list("wkld123")
-
-        assert isinstance(result, str)
-        assert "No protons found" in result
-
-    @pytest.mark.asyncio
-    async def test_proton_status_details(self):
-        """Test proton_status_details tool."""
-        import wapi_mcp_server as mcp
-
-        mock_client = AsyncMock()
-        mock_client.get_proton_status_details = AsyncMock(return_value={
-            "overallStatus": {
-                "state": "running",
-                "summary": "All containers are running",
-                "lastUpdated": "2024-01-15T10:00:00Z"
-            },
-            "replicas": [
-                {
-                    "name": "replica-1",
-                    "status": "running",
-                    "address": "10.0.0.1",
-                    "nodeAddress": "node-1",
-                    "startedAt": "2024-01-15T09:00:00Z",
-                    "conditions": [
-                        {"type": "Ready", "met": True, "since": "5m"},
-                        {"type": "ContainersReady", "met": True, "since": "5m"},
-                        {"type": "Initialized", "met": True, "since": "10m"},
-                        {"type": "PodScheduled", "met": True, "since": "10m"}
-                    ],
-                    "containers": [
-                        {
-                            "name": "main",
-                            "status": "running",
-                            "ready": True,
-                            "restartCount": 0,
-                            "image": "ghcr.io/test/image:latest",
-                            "startedAt": "2024-01-15T09:00:00Z"
-                        }
-                    ]
-                }
-            ]
-        })
-
-        with patch('wapi_mcp_server.get_client', return_value=mock_client):
-            result = await mcp.proton_status_details("wkld123", "proton123")
-
-        assert isinstance(result, str)
-        assert "running" in result.lower()
-        assert "Ready" in result
-        assert "ContainersReady" in result
-        assert "main" in result
-        assert "[OK]" in result  # Check marks for met conditions
-        mock_client.get_proton_status_details.assert_called_once_with("wkld123", "proton123")
-
-    @pytest.mark.asyncio
-    async def test_proton_status_details_with_issues(self):
-        """Test proton_status_details with container issues."""
-        import wapi_mcp_server as mcp
-
-        mock_client = AsyncMock()
-        mock_client.get_proton_status_details = AsyncMock(return_value={
-            "overallStatus": {
-                "state": "errored",
-                "summary": "Container is failing",
-                "lastUpdated": "2024-01-15T10:00:00Z"
-            },
-            "replicas": [
-                {
-                    "name": "replica-1",
-                    "status": "failed",
-                    "address": "",
-                    "nodeAddress": "",
-                    "startedAt": "",
-                    "conditions": [
-                        {"type": "Ready", "met": False, "since": ""},
-                        {"type": "ContainersReady", "met": False, "since": ""}
-                    ],
-                    "containers": [
-                        {
-                            "name": "main",
-                            "status": "waiting",
-                            "ready": False,
-                            "restartCount": 5,
-                            "image": "ghcr.io/test/image:latest"
-                        }
-                    ]
-                }
-            ]
-        })
-
-        with patch('wapi_mcp_server.get_client', return_value=mock_client):
-            result = await mcp.proton_status_details("wkld123", "proton123")
-
-        assert isinstance(result, str)
-        assert "errored" in result.lower() or "failed" in result.lower()
-        assert "[--]" in result  # Dash marks for unmet conditions
-        assert "restarts: 5" in result.lower()
-        assert "waiting" in result.lower()
-
-    @pytest.mark.asyncio
-    async def test_proton_status_details_no_content(self):
-        """Test proton_status_details with 204 No Content response."""
-        import wapi_mcp_server as mcp
-
-        mock_client = AsyncMock()
-        mock_client.get_proton_status_details = AsyncMock(
-            side_effect=Exception("204 No content")
-        )
-
-        with patch('wapi_mcp_server.get_client', return_value=mock_client):
-            result = await mcp.proton_status_details("wkld123", "proton123")
-
-        assert isinstance(result, str)
-        assert "No status details available" in result
-        assert "initializing" in result.lower()
-
-    @pytest.mark.asyncio
-    async def test_proton_status_details_empty_response(self):
-        """Test proton_status_details with empty response."""
-        import wapi_mcp_server as mcp
-
-        mock_client = AsyncMock()
-        mock_client.get_proton_status_details = AsyncMock(return_value={})
-
-        with patch('wapi_mcp_server.get_client', return_value=mock_client):
-            result = await mcp.proton_status_details("wkld123", "proton123")
-
-        assert isinstance(result, str)
-        assert "No status details available" in result
