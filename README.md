@@ -267,9 +267,11 @@ The assistant will use `workload_create` with `credential_env_vars` to securely 
 **Debugging workflow:**
 1. **Check workload status**: `workload_status(workload_id)` - Shows conditions, log tail, and error messages
 2. **List protons**: `proton_list(workload_id)` - Find which proton is having issues
-3. **Check proton details**: `proton_status_details(workload_id, proton_id)` - See per-replica status, container states, restart counts
+3. **Check K8s pod status**: `proton_status_details(workload_id, proton_id)` - Deep dive into pod conditions, container states, and restart counts
 4. **View application logs**: `otel_logs(workload_id)` - See full application logs from stdout/stderr
 5. **Check events**: `workload_events(workload_id)` - See workload lifecycle events
+
+**Note**: `proton_status_details` provides Kubernetes-level diagnostics (pod conditions, container states), while `otel_logs` shows application-level logs (stdout/stderr).
 
 **Common issues detected:**
 - **CrashLoopBackOff** - Container keeps crashing, check logs for error
@@ -479,9 +481,17 @@ Protons are the actual deployment instances of your workload. Use these tools fo
 |------|-------------|
 | `proton_list` | List all protons for a workload |
 | `proton_get` | Get proton details including status and runtime config |
-| `proton_status_details` | **[DEBUG]** Get per-replica status with container states, restart counts, and conditions |
+| `proton_status_details` | **[DEBUG]** Get detailed Kubernetes pod conditions and container states |
 
-**Debugging tip**: When a workload fails, use `proton_status_details()` to see exactly why containers are failing (crash loops, image pull errors, OOM kills, probe failures, etc.).
+**What `proton_status_details` shows:**
+- **Pod conditions**: Ready, ContainersReady, Initialized, PodScheduled (with `[OK]` or `[--]` status)
+- **Container states**: running, waiting, or terminated
+- **Restart counts**: Track crash loops
+- **Container images**: Verify correct image is deployed
+- **Node information**: Pod scheduling details
+- **State reasons**: ImagePullBackOff, CrashLoopBackOff, OOMKilled, etc.
+
+**Debugging tip**: When a workload fails, use `proton_status_details()` to see exactly why containers are failing. Look for `[--]` markers indicating unmet conditions and high restart counts.
 
 ### Artifacts
 

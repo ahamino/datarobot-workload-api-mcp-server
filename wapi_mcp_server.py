@@ -410,7 +410,8 @@ UI URL: {ui_url}"""
 
     result += f"""
 
-Logs (built-in): otel_logs("{workload_id}")"""
+Logs (built-in): otel_logs("{workload_id}")
+K8s diagnostics: proton_list("{workload_id}") then proton_status_details()"""
 
     return result
 
