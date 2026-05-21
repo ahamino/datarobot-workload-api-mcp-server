@@ -1,0 +1,6 @@
+name: wapi-mcp-server
+description: Deploys the WAPI MCP Server as a DataRobot workload.
+runtime:
+  name: python
+  options:
+    virtualenv: venv

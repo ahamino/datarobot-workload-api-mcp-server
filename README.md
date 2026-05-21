@@ -312,6 +312,28 @@ curl -X PATCH "${DATAROBOT_API_ENDPOINT}/artifacts/${ARTIFACT_ID}/" \
 | Workload Endpoint | `${DATAROBOT_API_ENDPOINT}/endpoints/workloads/${WORKLOAD_ID}/mcp` |
 | Console UI | `https://app.datarobot.com/console-nextgen/workloads/${WORKLOAD_ID}/overview` |
 
+## Deploy via Pulumi
+
+The `infra/` directory contains a Pulumi program (Python) that provisions the credential, artifact, and workload using the `pulumi-datarobot` provider — equivalent to the curl flow above but declarative.
+
+```bash
+cd infra
+python -m venv venv && source venv/bin/activate
+pip install -r requirements.txt
+
+pulumi stack init dev
+pulumi config set datarobot:endpoint     "${DATAROBOT_API_ENDPOINT}"
+pulumi config set --secret datarobot:apikey         "${DATAROBOT_API_TOKEN}"
+pulumi config set --secret wapi-mcp-server:datarobotToken "${DATAROBOT_API_TOKEN}"
+
+pulumi up
+pulumi stack output mcpUrl
+```
+
+Outputs: `credentialId`, `artifactId`, `workloadId`, `mcpUrl`.
+
+**Known limitation:** `pulumi-datarobot` 0.10.37 does not yet expose `dr-credential` env-var injection, so the API token is passed to the container as a plain env var (sourced from a Pulumi secret config — encrypted in state). The `ApiTokenCredential` resource is still created so other workloads can reference it; swap the workload env var over once the provider exposes the injection fields.
+
 ## Creating Workloads via MCP Tools
 
 Once the MCP server is running, you can use AI assistants (like Claude) to create and manage workloads through natural language. The MCP tools provide a more intuitive interface than raw API calls.

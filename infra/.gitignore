@@ -1,0 +1,7 @@
+venv/
+.venv/
+*.pyc
+__pycache__/
+Pulumi.*.yaml
+Pulumi.*.yaml.bak
+
