@@ -488,7 +488,9 @@ components:
           anyOf:
           - type: string
           - type: 'null'
-          description: Name of the container
+          description: Name of the container. Lowercase letters, digits, and hyphens
+            only; must start with a lowercase letter and end with a letter or digit;
+            max 63 characters.
           title: Name
         port:
           anyOf:
@@ -561,7 +563,8 @@ components:
         name:
           default: default
           description: Name of the container group. Used as the lookup key for runtime
-            overrides.
+            overrides. Lowercase letters, digits, and hyphens only; must start with
+            a lowercase letter and end with a letter or digit; max 63 characters.
           title: Name
           type: string
       title: ContainerGroup
