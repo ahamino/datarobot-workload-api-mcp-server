@@ -335,7 +335,7 @@ pulumi stack output mcpUrl
 
 Outputs: `credentialId`, `artifactId`, `workloadId`, `mcpUrl`.
 
-**Known limitation:** `pulumi-datarobot` 0.10.37 does not yet expose `dr-credential` env-var injection, so the API token is passed to the container as a plain env var (sourced from a Pulumi secret config — encrypted in state). The `ApiTokenCredential` resource is still created so other workloads can reference it; swap the workload env var over once the provider exposes the injection fields.
+The API token is injected into the container via DataRobot credential injection (`source: dr-credential`) — the token value never lands in the artifact spec, only the credential reference does.
 
 ## Creating Workloads via MCP Tools
 
