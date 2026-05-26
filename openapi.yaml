@@ -324,8 +324,13 @@ components:
           description: Policy priority when multiple policies are defined
           title: Priority
         scalingMetric:
-          $ref: '#/components/schemas/ScalingMetricType'
-          description: Metric used for scaling decisions
+          anyOf:
+          - $ref: '#/components/schemas/ScalingMetricType'
+          - type: string
+          description: Metric used for scaling decisions. Use one of the predefined
+            values for standard autoscaling, or provide a custom metric name for NIM
+            2.0 workloads (e.g. 'vllm:kv_cache_usage_perc'). Custom metric names are
+            only supported for NIM artifacts.
           title: Scaling Metric
         target:
           description: Target value for the scaling metric
@@ -960,9 +965,9 @@ components:
       description: Response after requesting image build(s) for a draft artifact.
       properties:
         buildIds:
-          description: Workload API artifact image build document ids (Mongo ObjectId
-            strings), one per distinct Files API catalog/version pair. Internal image
-            build ids are not returned.
+          description: Workload API artifact image build document ids (same strings
+            returned as `build_id` on GET/DELETE build routes), one per distinct Files
+            API catalog/version pair. Internal image build ids are not returned.
           items:
             type: string
           title: Buildids
@@ -1221,9 +1226,6 @@ components:
         status:
           $ref: '#/components/schemas/ProtonStatus'
           description: Proton status
-        statusDetails:
-          $ref: '#/components/schemas/ProtonStatusDetailsPublic'
-          description: Proton status details
         updatedAt:
           description: Timestamp of when the entity was last updated
           format: date-time
@@ -1332,30 +1334,17 @@ components:
       - provisioning
       - launching
       - running
+      - suspended
       - warming
       - draining
+      - interrupted
+      - restarting
       - stopping
       - stopped
       - errored
       - terminated
       title: ProtonStatus
       type: string
-    ProtonStatusDetailsPublic:
-      additionalProperties: false
-      description: "Public-facing proton status details \u2014 exposes only log tail,\
-        \ not cluster conditions."
-      properties:
-        logTail:
-          anyOf:
-          - items:
-              type: string
-            type: array
-          - type: 'null'
-          description: Tail of container logs from the latest proton status during
-            startup
-          title: Logtail
-      title: ProtonStatusDetailsPublic
-      type: object
     ProvidedDockerfile:
       additionalProperties: false
       description: User supplies a Dockerfile in the uploaded source code.
@@ -1637,21 +1626,21 @@ components:
     ReplicaConditionDetail:
       additionalProperties: false
       properties:
-        met:
-          anyOf:
-          - type: boolean
-          - type: 'null'
-          title: Met
-        since:
-          title: Since
+        lastTransitionTime:
+          title: Lasttransitiontime
           type: string
         type:
           title: Type
           type: string
+        value:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Value
       required:
       - type
-      - met
-      - since
+      - value
+      - lastTransitionTime
       title: ReplicaConditionDetail
       type: object
     ReplicaDetail:
@@ -1863,7 +1852,7 @@ components:
       properties:
         cpu:
           anyOf:
-          - minimum: 0.0
+          - minimum: 0.1
             type: number
           - type: 'null'
           description: CPU cores allocated to this container.
@@ -1875,16 +1864,6 @@ components:
           - type: 'null'
           description: GPUs allocated to this container.
           title: Gpu
-        gpuMemory:
-          anyOf:
-          - pattern: ^\s*(\d*\.?\d+)\s*(\w+)?
-            type: string
-          - minimum: 0.0
-            type: integer
-          - type: 'null'
-          description: GPU VRAM allocated to this container. Accepts human-readable
-            strings (e.g. '15GB', '16GiB') or raw bytes.
-          title: Gpumemory
         memory:
           anyOf:
           - pattern: ^\s*(\d*\.?\d+)\s*(\w+)?
@@ -1892,8 +1871,12 @@ components:
           - minimum: 0.0
             type: integer
           - type: 'null'
-          description: RAM allocated to this container. Accepts human-readable strings
-            (e.g. '8GB', '512MiB') or raw bytes.
+          description: "RAM allocated to this container. Accepts a human-readable\
+            \ string with one of: B, KB, MB, GB (1000-based) \u2014 e.g. '8GB', '512MB'.\
+            \ Also accepts raw byte integers."
+          examples:
+          - 8GB
+          - 512MB
           title: Memory
       title: ResourceAllocation
       type: object
@@ -2155,6 +2138,32 @@ components:
       - OBSERVER
       title: SharingRole
       type: string
+    StartReplacementRequest:
+      additionalProperties: false
+      description: Request to start a replacement for a workload.
+      properties:
+        artifactId:
+          description: Existing Artifact ID to deploy
+          title: Artifactid
+          type: string
+        config:
+          $ref: '#/components/schemas/ReplacementConfig'
+          description: Configuration for the replacement process, including warmup
+            duration and old version retention time
+        runtime:
+          anyOf:
+          - $ref: '#/components/schemas/WorkloadRuntime'
+          - type: 'null'
+          description: Runtime for the workload; if omitted, the current runtime is
+            reused
+        strategy:
+          $ref: '#/components/schemas/ReplacementStrategy'
+          description: Replacement strategy
+      required:
+      - artifactId
+      - strategy
+      title: StartReplacementRequest
+      type: object
     StringEnvironmentVariable:
       properties:
         name:
@@ -2543,9 +2552,9 @@ components:
           description: Runtime configuration sourced from the current proton
           title: Runtime
         status:
-          $ref: '#/components/schemas/ProtonStatus'
+          $ref: '#/components/schemas/WorkloadStatus'
           default: unknown
-          description: Current proton status
+          description: Current workload status
           title: Status
         tags:
           $ref: '#/components/schemas/Tags'
@@ -2761,6 +2770,24 @@ components:
           description: Workload count statistics
       title: WorkloadStatsResponse
       type: object
+    WorkloadStatus:
+      description: "User-facing workload status.\n\nA subset of :class:`ProtonStatus`\
+        \ \u2014 excludes internal proton-lifecycle\nstates (WARMING, DRAINING, RESTARTING)\
+        \ that should never be surfaced as\na workload status."
+      enum:
+      - unknown
+      - submitted
+      - provisioning
+      - launching
+      - running
+      - suspended
+      - interrupted
+      - stopping
+      - stopped
+      - errored
+      - terminated
+      title: WorkloadStatus
+      type: string
     WorkloadsConcurrentRequestsStats:
       additionalProperties: false
       description: Workload concurrent requests statistics.
@@ -3586,6 +3613,45 @@ paths:
       tags:
       - artifacts
   /artifacts/{artifact_id}/builds/{build_id}:
+    delete:
+      description: Request cancellation/deletion of an image build for a **draft**
+        artifact (immutable when locked).
+      operationId: deleteArtifactBuild
+      parameters:
+      - description: Artifact ID
+        in: path
+        name: artifact_id
+        required: true
+        schema:
+          description: Artifact ID
+          title: Artifact Id
+          type: string
+      - description: Workload API artifact image build id, same id returned by trigger
+          build
+        in: path
+        name: build_id
+        required: true
+        schema:
+          description: Workload API artifact image build id, same id returned by trigger
+            build
+          title: Build Id
+          type: string
+      responses:
+        '204':
+          description: Successful Response
+        '400':
+          description: Bad request
+        '401':
+          description: Unauthenticated
+        '403':
+          description: Insufficient permissions
+        '404':
+          description: Artifact not found
+        '422':
+          description: Artifact not draft or internal error
+      summary: Delete Artifact Build
+      tags:
+      - artifacts
     get:
       operationId: getArtifactBuild
       parameters:
@@ -3597,14 +3663,14 @@ paths:
           description: Artifact ID
           title: Artifact Id
           type: string
-      - description: Workload API artifact image build id (Mongo ObjectId), same id
-          returned by trigger build
+      - description: Workload API artifact image build id, same id returned by trigger
+          build
         in: path
         name: build_id
         required: true
         schema:
-          description: Workload API artifact image build id (Mongo ObjectId), same
-            id returned by trigger build
+          description: Workload API artifact image build id, same id returned by trigger
+            build
           title: Build Id
           type: string
       responses:
@@ -3639,12 +3705,14 @@ paths:
           description: Artifact ID
           title: Artifact Id
           type: string
-      - description: Artifact image build id
+      - description: Workload API artifact image build id, same id returned by trigger
+          build
         in: path
         name: build_id
         required: true
         schema:
-          description: Artifact image build id
+          description: Workload API artifact image build id, same id returned by trigger
+            build
           title: Build Id
           type: string
       responses:
@@ -3907,17 +3975,17 @@ paths:
           - type: 'null'
           description: The order to sort the results.
           title: Order By
-      - description: Filters workloads by their corresponding proton status.
+      - description: Filters workloads by status.
         in: query
         name: status
         required: false
         schema:
           anyOf:
           - items:
-              $ref: '#/components/schemas/ProtonStatus'
+              $ref: '#/components/schemas/WorkloadStatus'
             type: array
           - type: 'null'
-          description: Filters workloads by their corresponding proton status.
+          description: Filters workloads by status.
           title: Status
       - description: Filters workloads by their corresponding artifact status.
         in: query
@@ -3943,7 +4011,7 @@ paths:
           - type: 'null'
           description: Filters workloads by their importance.
           title: Importance
-      - description: Filter workloads by their active artifact ID
+      - description: Filter workloads by their active artifact ID.
         in: query
         name: artifactId
         required: false
@@ -3951,9 +4019,9 @@ paths:
           anyOf:
           - type: string
           - type: 'null'
-          description: Filter workloads by their active artifact ID
+          description: Filter workloads by their active artifact ID.
           title: Artifact ID
-      - description: Filter workloads by their active artifact's repository ID
+      - description: Filter workloads by their active artifact's repository ID.
         in: query
         name: repositoryId
         required: false
@@ -3961,8 +4029,18 @@ paths:
           anyOf:
           - type: string
           - type: 'null'
-          description: Filter workloads by their active artifact's repository ID
+          description: Filter workloads by their active artifact's repository ID.
           title: Artifact Repository ID
+      - description: Filters workloads by artifact type.
+        in: query
+        name: type
+        required: false
+        schema:
+          anyOf:
+          - $ref: '#/components/schemas/ArtifactType'
+          - type: 'null'
+          description: Filters workloads by artifact type.
+          title: Type
       - description: If true, includes recent service statistics in the response.
         in: query
         name: serviceStats
@@ -4108,17 +4186,17 @@ paths:
           - type: 'null'
           description: The order to sort the results.
           title: Order By
-      - description: Filters workloads by their corresponding proton status.
+      - description: Filters workloads by status.
         in: query
         name: status
         required: false
         schema:
           anyOf:
           - items:
-              $ref: '#/components/schemas/ProtonStatus'
+              $ref: '#/components/schemas/WorkloadStatus'
             type: array
           - type: 'null'
-          description: Filters workloads by their corresponding proton status.
+          description: Filters workloads by status.
           title: Status
       - description: Filters workloads by their corresponding artifact status.
         in: query
@@ -4144,7 +4222,7 @@ paths:
           - type: 'null'
           description: Filters workloads by their importance.
           title: Importance
-      - description: Filter workloads by their active artifact ID
+      - description: Filter workloads by their active artifact ID.
         in: query
         name: artifactId
         required: false
@@ -4152,9 +4230,9 @@ paths:
           anyOf:
           - type: string
           - type: 'null'
-          description: Filter workloads by their active artifact ID
+          description: Filter workloads by their active artifact ID.
           title: Artifact ID
-      - description: Filter workloads by their active artifact's repository ID
+      - description: Filter workloads by their active artifact's repository ID.
         in: query
         name: repositoryId
         required: false
@@ -4162,8 +4240,18 @@ paths:
           anyOf:
           - type: string
           - type: 'null'
-          description: Filter workloads by their active artifact's repository ID
+          description: Filter workloads by their active artifact's repository ID.
           title: Artifact Repository ID
+      - description: Filters workloads by artifact type.
+        in: query
+        name: type
+        required: false
+        schema:
+          anyOf:
+          - $ref: '#/components/schemas/ArtifactType'
+          - type: 'null'
+          description: Filters workloads by artifact type.
+          title: Type
       responses:
         '200':
           content:
@@ -4659,6 +4747,117 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
           description: Validation Error
       summary: Get Workload Related Entities
+      tags:
+      - workloads
+  /workloads/{workload_id}/replacement:
+    delete:
+      operationId: deleteWorkloadReplacement
+      parameters:
+      - description: Workload ID
+        in: path
+        name: workload_id
+        required: true
+        schema:
+          description: Workload ID
+          title: Workload Id
+          type: string
+      responses:
+        '202':
+          content:
+            application/json:
+              schema: {}
+          description: Successful Response
+        '400':
+          description: Bad request
+        '401':
+          description: Unauthenticated
+        '403':
+          description: Insufficient permissions
+        '404':
+          description: Workload not found
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Delete Replacement
+      tags:
+      - workloads
+    get:
+      operationId: getWorkloadReplacement
+      parameters:
+      - description: Workload ID
+        in: path
+        name: workload_id
+        required: true
+        schema:
+          description: Workload ID
+          title: Workload Id
+          type: string
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Replacement'
+          description: Successful Response
+        '400':
+          description: Bad request
+        '401':
+          description: Unauthenticated
+        '403':
+          description: Insufficient permissions
+        '404':
+          description: Workload not found
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Get Replacement
+      tags:
+      - workloads
+    post:
+      operationId: createWorkloadReplacement
+      parameters:
+      - description: Workload ID
+        in: path
+        name: workload_id
+        required: true
+        schema:
+          description: Workload ID
+          title: Workload Id
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StartReplacementRequest'
+        required: true
+      responses:
+        '202':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Replacement'
+          description: Successful Response
+        '400':
+          description: Bad request
+        '401':
+          description: Unauthenticated
+        '403':
+          description: Insufficient permissions
+        '404':
+          description: Workload not found
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Create Replacement
       tags:
       - workloads
   /workloads/{workload_id}/settings:

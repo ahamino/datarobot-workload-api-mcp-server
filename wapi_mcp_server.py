@@ -273,6 +273,7 @@ async def workload_list(
     status: Optional[str] = None,
     importance: Optional[str] = None,
     artifact_status: Optional[str] = None,
+    artifact_type: Optional[str] = None,
     artifact_id: Optional[str] = None,
     repository_id: Optional[str] = None,
     created_by: Optional[str] = None,
@@ -284,11 +285,12 @@ async def workload_list(
     Args:
         limit: Maximum number of workloads to return (default: 100)
         offset: Number of workloads to skip for pagination (default: 0)
-        status: Filter by proton status. Valid values:
-                unknown, submitted, initializing, provisioning, launching,
-                running, warming, draining, stopping, stopped, errored, terminated
+        status: Filter by workload status. Valid values:
+                unknown, submitted, provisioning, launching, running,
+                suspended, interrupted, stopping, stopped, errored, terminated
         importance: Filter by importance (critical, high, moderate, low)
         artifact_status: Filter by artifact status (draft, locked)
+        artifact_type: Filter by artifact type (service, nim)
         artifact_id: Filter by specific artifact ID
         repository_id: Filter by artifact repository ID
         created_by: Filter by creator user ID
@@ -311,6 +313,7 @@ async def workload_list(
         status=status_list,
         importance=importance_list,
         artifact_status=artifact_status_list,
+        artifact_type=artifact_type,
         artifact_id=artifact_id,
         repository_id=repository_id,
         created_by=created_by,
@@ -610,8 +613,11 @@ async def workload_create(
         autoscaling_enabled: Enable autoscaling (default: False)
         autoscaling_min: Minimum replicas when autoscaling (default: 1)
         autoscaling_max: Maximum replicas when autoscaling (default: 5)
-        autoscaling_metric: Scaling metric - cpuAverageUtilization, httpRequestsConcurrency,
-                           gpuCacheUtilization, gpuRequestQueueDepth (default: cpuAverageUtilization)
+        autoscaling_metric: Scaling metric - one of the standard metrics
+                           (cpuAverageUtilization, httpRequestsConcurrency,
+                           gpuCacheUtilization, gpuRequestQueueDepth) or a custom
+                           metric name for NIM artifacts, e.g. "vllm:kv_cache_usage_perc"
+                           (default: cpuAverageUtilization)
         autoscaling_target: Target value for the scaling metric (default: 70)
         importance: Importance level: "low", "moderate", "high", "critical" (default: low)
         description: Optional workload description
@@ -651,10 +657,15 @@ async def workload_create(
     if resource_bundle_ids is not None and not isinstance(resource_bundle_ids, list):
         return f"Error: resource_bundle_ids must be a list, got {type(resource_bundle_ids).__name__}"
 
-    # Validate autoscaling metric
-    valid_metrics = ["cpuAverageUtilization", "httpRequestsConcurrency", "gpuCacheUtilization", "gpuRequestQueueDepth"]
-    if autoscaling_metric not in valid_metrics:
-        return f"Error: autoscaling_metric must be one of {valid_metrics}, got '{autoscaling_metric}'"
+    # Validate autoscaling metric. Standard metrics are validated against a known
+    # list; custom metric names (e.g. "vllm:kv_cache_usage_perc") are allowed for
+    # NIM artifacts and passed through for the API to validate.
+    standard_metrics = ["cpuAverageUtilization", "httpRequestsConcurrency", "gpuCacheUtilization", "gpuRequestQueueDepth"]
+    if autoscaling_metric not in standard_metrics and ":" not in autoscaling_metric:
+        return (
+            f"Error: autoscaling_metric must be one of {standard_metrics}, or a custom "
+            f"NIM metric name (e.g. 'vllm:kv_cache_usage_perc'), got '{autoscaling_metric}'"
+        )
 
     client = await get_client()
 
@@ -982,8 +993,10 @@ async def workload_settings_update(
         autoscaling_enabled: Enable or disable autoscaling
         autoscaling_min: Minimum replicas when autoscaling
         autoscaling_max: Maximum replicas when autoscaling
-        autoscaling_metric: Scaling metric - cpuAverageUtilization, httpRequestsConcurrency,
-                          gpuCacheUtilization, gpuRequestQueueDepth
+        autoscaling_metric: Scaling metric - one of the standard metrics
+                          (cpuAverageUtilization, httpRequestsConcurrency,
+                          gpuCacheUtilization, gpuRequestQueueDepth) or a custom
+                          metric name for NIM artifacts, e.g. "vllm:kv_cache_usage_perc"
         autoscaling_target: Target value for the scaling metric
     """
     # Parse list parameter that may have been stringified by MCP client
@@ -991,11 +1004,15 @@ async def workload_settings_update(
     if resource_bundle_ids is not None and not isinstance(resource_bundle_ids, list):
         return f"Error: resource_bundle_ids must be a list, got {type(resource_bundle_ids).__name__}"
 
-    # Validate autoscaling metric if provided
+    # Validate autoscaling metric if provided. Custom metric names (e.g.
+    # "vllm:kv_cache_usage_perc") are allowed for NIM artifacts.
     if autoscaling_metric is not None:
-        valid_metrics = ["cpuAverageUtilization", "httpRequestsConcurrency", "gpuCacheUtilization", "gpuRequestQueueDepth"]
-        if autoscaling_metric not in valid_metrics:
-            return f"Error: autoscaling_metric must be one of {valid_metrics}, got '{autoscaling_metric}'"
+        standard_metrics = ["cpuAverageUtilization", "httpRequestsConcurrency", "gpuCacheUtilization", "gpuRequestQueueDepth"]
+        if autoscaling_metric not in standard_metrics and ":" not in autoscaling_metric:
+            return (
+                f"Error: autoscaling_metric must be one of {standard_metrics}, or a custom "
+                f"NIM metric name (e.g. 'vllm:kv_cache_usage_perc'), got '{autoscaling_metric}'"
+            )
 
     client = await get_client()
 
@@ -1244,6 +1261,101 @@ The artifact is now locked and immutable.
 Stats have been reset."""
 
 
+def _format_replacement(r: dict) -> str:
+    """Render a Replacement object as a readable summary."""
+    config = r.get("config") or {}
+    lines = [
+        f"Replacement {r.get('id', 'N/A')}:",
+        f"Workload: {r.get('workloadId', 'N/A')}",
+        f"Status: {r.get('status', 'N/A')}",
+        f"Strategy: {r.get('strategy', 'N/A')}",
+        f"Candidate artifact: {r.get('candidateArtifactId', 'N/A')}",
+        f"Warmup (min): {config.get('warmupDurationMinutes', 0)}",
+        f"Keep old version (min): {config.get('keepOldVersionMinutes', 0)}",
+        f"Created: {format_created_at(r.get('createdAt', ''))}",
+        f"Switched: {format_created_at(r.get('switchedAt', '')) if r.get('switchedAt') else 'N/A'}",
+    ]
+    if r.get("message"):
+        lines.append(f"Message: {r['message']}")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+@traced_tool
+async def workload_replacement_get(workload_id: str) -> str:
+    """Get the active (or most recent) replacement for a workload.
+
+    A replacement is a rolling swap of the workload to a different artifact:
+    the candidate is deployed alongside the running version, traffic switches
+    once it is ready, then the old version is decommissioned.
+
+    Args:
+        workload_id: The workload ID
+    """
+    client = await get_client()
+    replacement = await client.get_workload_replacement(workload_id)
+    return _format_replacement(replacement)
+
+
+@mcp.tool()
+@traced_tool
+async def workload_replacement_create(
+    workload_id: str,
+    artifact_id: str,
+    strategy: str = "rolling",
+    warmup_duration_minutes: int = 0,
+    keep_old_version_minutes: int = 0,
+) -> str:
+    """Start a replacement, swapping a workload to a different artifact.
+
+    This performs a rolling replacement: the candidate artifact is deployed
+    alongside the currently running version and traffic is switched to it once
+    it is ready, after which the old version is decommissioned.
+
+    To change runtime settings (replicas, resources, autoscaling) of the SAME
+    artifact instead, use workload_settings_update().
+
+    Args:
+        workload_id: The workload ID to replace the artifact for
+        artifact_id: Existing artifact ID to deploy
+        strategy: Replacement strategy (only "rolling" is supported)
+        warmup_duration_minutes: Minutes to warm up the candidate before switching
+        keep_old_version_minutes: Minutes to keep the old version after switching
+    """
+    if strategy != "rolling":
+        return f"Error: strategy must be 'rolling', got '{strategy}'"
+
+    payload: dict = {
+        "artifactId": artifact_id,
+        "strategy": strategy,
+        "config": {
+            "warmupDurationMinutes": warmup_duration_minutes,
+            "keepOldVersionMinutes": keep_old_version_minutes,
+        },
+    }
+
+    client = await get_client()
+    replacement = await client.create_workload_replacement(workload_id, payload)
+    return (
+        f"Replacement started for workload {workload_id}.\n\n"
+        + _format_replacement(replacement)
+        + f"\n\nUse workload_replacement_get({workload_id}) to monitor progress."
+    )
+
+
+@mcp.tool()
+@traced_tool
+async def workload_replacement_delete(workload_id: str) -> str:
+    """Cancel the in-progress replacement for a workload.
+
+    Args:
+        workload_id: The workload ID whose replacement should be cancelled
+    """
+    client = await get_client()
+    await client.delete_workload_replacement(workload_id)
+    return f"Replacement for workload {workload_id} cancelled."
+
+
 @mcp.tool()
 @traced_tool
 async def proton_list(workload_id: str, limit: int = 10, offset: int = 0) -> str:
@@ -1379,8 +1491,10 @@ Replicas: {len(replicas)}
             result += "Conditions:\n"
             for cond in conditions:
                 ctype = cond.get("type", "")
-                met = cond.get("met")
-                since = cond.get("since", "")
+                # Field names were renamed: met -> value, since -> lastTransitionTime.
+                # Fall back to the old names for backward compatibility.
+                met = cond.get("value", cond.get("met"))
+                since = cond.get("lastTransitionTime", cond.get("since", ""))
                 status_icon = "[OK]" if met else "[--]"
                 result += f"  {status_icon} {ctype}: {since}\n"
 
@@ -1879,6 +1993,23 @@ Updated: {updated}
         result += "\nBuild in progress. Check again later."
 
     return result
+
+
+@mcp.tool()
+@traced_tool
+async def artifact_build_delete(artifact_id: str, build_id: str) -> str:
+    """Cancel or delete an image build for a DRAFT artifact.
+
+    Only works for draft artifacts; builds for locked (immutable) artifacts
+    cannot be deleted.
+
+    Args:
+        artifact_id: The artifact ID
+        build_id: The build ID to cancel/delete
+    """
+    client = await get_client()
+    await client.delete_artifact_build(artifact_id, build_id)
+    return f"Build {build_id} for artifact {artifact_id} cancelled/deleted."
 
 
 @mcp.tool()

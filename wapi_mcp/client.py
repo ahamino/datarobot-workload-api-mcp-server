@@ -213,6 +213,7 @@ class WapiClient:
         importance: Optional[List[str]] = None,
         artifact_id: Optional[str] = None,
         artifact_status: Optional[List[str]] = None,
+        artifact_type: Optional[str] = None,
         repository_id: Optional[str] = None,
         created_by: Optional[str] = None,
         tag_keys: Optional[List[str]] = None,
@@ -235,6 +236,8 @@ class WapiClient:
             extra_params["artifactId"] = artifact_id
         if artifact_status:
             extra_params["artifactStatus"] = artifact_status
+        if artifact_type:
+            extra_params["type"] = artifact_type
         if repository_id:
             extra_params["repositoryId"] = repository_id
         if created_by:
@@ -456,6 +459,28 @@ class WapiClient:
             json_body=payload,
         )
 
+    # -------------------- Replacements ---------------------------------
+
+    async def get_workload_replacement(self, workload_id: str) -> Dict[str, Any]:
+        """Get the active (or most recent) replacement for a workload."""
+        return await self.request(
+            "GET", f"/api/v2/workloads/{workload_id}/replacement/"
+        )
+
+    async def create_workload_replacement(
+        self, workload_id: str, payload: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Start a replacement, swapping the workload to a different artifact."""
+        return await self.request(
+            "POST", f"/api/v2/workloads/{workload_id}/replacement/", json_body=payload
+        )
+
+    async def delete_workload_replacement(self, workload_id: str) -> None:
+        """Cancel the in-progress replacement for a workload."""
+        await self.request(
+            "DELETE", f"/api/v2/workloads/{workload_id}/replacement/"
+        )
+
     # -------------------- Artifacts ------------------------------------
 
     async def list_artifacts(
@@ -566,6 +591,12 @@ class WapiClient:
         """Get an image build by ID."""
         return await self.request(
             "GET", f"/api/v2/artifacts/{artifact_id}/builds/{build_id}/",
+        )
+
+    async def delete_artifact_build(self, artifact_id: str, build_id: str) -> None:
+        """Cancel/delete an image build for a draft artifact."""
+        await self.request(
+            "DELETE", f"/api/v2/artifacts/{artifact_id}/builds/{build_id}/",
         )
 
     async def get_artifact_build_logs(self, artifact_id: str, build_id: str) -> str:

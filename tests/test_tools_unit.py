@@ -966,3 +966,161 @@ class TestOTELTraceTools:
         mock_client.get_otel_trace.assert_called_once_with("wkld123", "trace123")
 
 
+class TestWorkloadReplacementTools:
+    """Unit tests for workload replacement tools."""
+
+    @pytest.mark.asyncio
+    async def test_workload_replacement_get(self):
+        """Test workload_replacement_get tool."""
+        import wapi_mcp_server as mcp
+
+        mock_client = AsyncMock()
+        mock_client.get_workload_replacement = AsyncMock(return_value={
+            "id": "repl123",
+            "workloadId": "wkld123",
+            "status": "switching",
+            "strategy": "rolling",
+            "candidateArtifactId": "art456",
+            "config": {"warmupDurationMinutes": 5, "keepOldVersionMinutes": 10},
+            "createdAt": "2024-01-15T10:00:00Z",
+        })
+
+        with patch('wapi_mcp_server.get_client', return_value=mock_client):
+            result = await mcp.workload_replacement_get("wkld123")
+
+        assert isinstance(result, str)
+        assert "repl123" in result
+        assert "art456" in result
+        assert "switching" in result
+        mock_client.get_workload_replacement.assert_called_once_with("wkld123")
+
+    @pytest.mark.asyncio
+    async def test_workload_replacement_create(self):
+        """Test workload_replacement_create tool."""
+        import wapi_mcp_server as mcp
+
+        mock_client = AsyncMock()
+        mock_client.create_workload_replacement = AsyncMock(return_value={
+            "id": "repl123",
+            "workloadId": "wkld123",
+            "status": "submitted",
+            "strategy": "rolling",
+            "candidateArtifactId": "art456",
+            "config": {"warmupDurationMinutes": 5, "keepOldVersionMinutes": 0},
+            "createdAt": "2024-01-15T10:00:00Z",
+        })
+
+        with patch('wapi_mcp_server.get_client', return_value=mock_client):
+            result = await mcp.workload_replacement_create(
+                "wkld123", "art456", warmup_duration_minutes=5
+            )
+
+        assert isinstance(result, str)
+        assert "repl123" in result
+        mock_client.create_workload_replacement.assert_called_once()
+        _, payload = mock_client.create_workload_replacement.call_args[0]
+        assert payload["artifactId"] == "art456"
+        assert payload["strategy"] == "rolling"
+        assert payload["config"]["warmupDurationMinutes"] == 5
+
+    @pytest.mark.asyncio
+    async def test_workload_replacement_create_invalid_strategy(self):
+        """Invalid strategy is rejected without an API call."""
+        import wapi_mcp_server as mcp
+
+        mock_client = AsyncMock()
+        with patch('wapi_mcp_server.get_client', return_value=mock_client):
+            result = await mcp.workload_replacement_create(
+                "wkld123", "art456", strategy="bluegreen"
+            )
+
+        assert "Error" in result
+        mock_client.create_workload_replacement.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_workload_replacement_delete(self):
+        """Test workload_replacement_delete tool."""
+        import wapi_mcp_server as mcp
+
+        mock_client = AsyncMock()
+        mock_client.delete_workload_replacement = AsyncMock(return_value=None)
+
+        with patch('wapi_mcp_server.get_client', return_value=mock_client):
+            result = await mcp.workload_replacement_delete("wkld123")
+
+        assert isinstance(result, str)
+        assert "wkld123" in result
+        mock_client.delete_workload_replacement.assert_called_once_with("wkld123")
+
+    @pytest.mark.asyncio
+    async def test_artifact_build_delete(self):
+        """Test artifact_build_delete tool."""
+        import wapi_mcp_server as mcp
+
+        mock_client = AsyncMock()
+        mock_client.delete_artifact_build = AsyncMock(return_value=None)
+
+        with patch('wapi_mcp_server.get_client', return_value=mock_client):
+            result = await mcp.artifact_build_delete("art123", "build123")
+
+        assert isinstance(result, str)
+        assert "build123" in result
+        mock_client.delete_artifact_build.assert_called_once_with("art123", "build123")
+
+    @pytest.mark.asyncio
+    async def test_workload_create_accepts_custom_nim_metric(self):
+        """Custom NIM autoscaling metric names (with ':') are accepted."""
+        import wapi_mcp_server as mcp
+
+        mock_client = AsyncMock()
+        mock_client.create_workload = AsyncMock(return_value={
+            "id": "wkld123", "name": "nim-wl", "status": "submitted",
+            "artifactId": "art123", "endpoint": "",
+        })
+        mock_client._build_url = lambda path: f"https://example.com{path}"
+
+        with patch('wapi_mcp_server.get_client', return_value=mock_client):
+            result = await mcp.workload_create(
+                name="nim-wl",
+                image_uri="nim:latest",
+                port=8080,
+                autoscaling_enabled=True,
+                autoscaling_metric="vllm:kv_cache_usage_perc",
+            )
+
+        assert "Error" not in result
+        mock_client.create_workload.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_workload_create_rejects_unknown_metric(self):
+        """A non-standard metric without ':' is still rejected."""
+        import wapi_mcp_server as mcp
+
+        mock_client = AsyncMock()
+        with patch('wapi_mcp_server.get_client', return_value=mock_client):
+            result = await mcp.workload_create(
+                name="wl",
+                image_uri="nginx:latest",
+                port=8080,
+                autoscaling_enabled=True,
+                autoscaling_metric="bogusMetric",
+            )
+
+        assert "Error" in result
+        mock_client.create_workload.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_workload_list_passes_artifact_type(self):
+        """workload_list forwards artifact_type to the client."""
+        import wapi_mcp_server as mcp
+
+        mock_client = AsyncMock()
+        mock_client.list_workloads = AsyncMock(return_value={"data": []})
+
+        with patch('wapi_mcp_server.get_client', return_value=mock_client):
+            await mcp.workload_list(artifact_type="nim")
+
+        _, kwargs = mock_client.list_workloads.call_args
+        assert kwargs["artifact_type"] == "nim"
+
+
