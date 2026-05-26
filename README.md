@@ -454,12 +454,31 @@ name/description/importance uses `workload_update`.
 }
 ```
 
-### Remote (via Proxy)
+### Remote (deployed as a workload)
 
-The DataRobot gateway strips non-standard HTTP headers. The proxy translates MCP session headers:
+The deployed server's MCP endpoint is:
 
-- **Outgoing**: `mcp-session-id` -> `x-datarobot-mcp-session-id`
-- **Incoming**: Reads from `x-datarobot-mcp-session-id` response header
+```
+${DATAROBOT_API_ENDPOINT}/endpoints/workloads/${WORKLOAD_ID}/mcp
+```
+
+The server runs in **stateless HTTP** mode (`stateless_http=True`), so it holds no
+per-session state in process memory — calls keep working across workload
+replacements/restarts and multiple replicas (no sticky sessions needed).
+
+**Clients that support remote HTTP MCP directly** (e.g. Claude Code) can connect
+straight to the endpoint with a bearer token:
+
+```bash
+claude mcp add --transport http wapi \
+  "${DATAROBOT_API_ENDPOINT}/endpoints/workloads/${WORKLOAD_ID}/mcp" \
+  --header "Authorization: Bearer ${DATAROBOT_API_TOKEN}"
+```
+
+**Clients that only launch a local stdio command** (e.g. Claude Desktop on a Teams
+account, which can't add custom remote connectors) use the bundled
+`claude_desktop_proxy.py` as a thin stdio→HTTP bridge that forwards JSON-RPC to the
+endpoint and adds the `Authorization` header.
 
 **Option 1: Using start-mcp.sh (recommended)**
 
@@ -499,6 +518,11 @@ Then configure Claude Desktop:
   }
 }
 ```
+
+> Note: because the server is now stateless, the proxy's `mcp-session-id` ↔
+> `x-datarobot-mcp-session-id` translation is no longer required for correctness —
+> the proxy is kept purely as a stdio→HTTP transport bridge with auth for clients
+> that can't connect to a remote HTTP MCP server directly.
 
 ## Troubleshooting & Debugging
 
