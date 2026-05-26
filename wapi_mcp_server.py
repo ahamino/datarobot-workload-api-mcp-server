@@ -785,16 +785,16 @@ async def workload_create(
                 if not isinstance(cred_env, dict):
                     return "Error: Each credential_env_var must be a dict with 'name', 'credential_id', 'key'"
 
-                name = cred_env.get("name")
+                env_name = cred_env.get("name")
                 cred_id = cred_env.get("credential_id")
                 key = cred_env.get("key")
 
-                if not all([name, cred_id, key]):
+                if not all([env_name, cred_id, key]):
                     return f"Error: credential_env_var missing required fields (name, credential_id, key): {cred_env}"
 
                 cred_envs.append({
                     "source": "dr-credential",
-                    "name": name,
+                    "name": env_name,
                     "drCredentialId": cred_id,
                     "key": key
                 })
@@ -2308,7 +2308,7 @@ async def get_credential_schemas() -> dict[str, list[str]]:
 
         # Extract credential schemas from components/schemas
         schemas = spec.get("components", {}).get("schemas", {})
-        credential_schemas = {}
+        credential_schemas: dict[str, list[str]] = {}
 
         # Parse CredentialsUpdate schema which has all field definitions
         # with descriptions indicating which credential type each field belongs to
@@ -2589,7 +2589,7 @@ async def otel_logs(
     output = f"=== OTEL LOGS FOR WORKLOAD {workload_id} ===\n"
     output += f"Showing {len(logs)} log entries (level >= {level})\n\n"
 
-    level_counts = {}
+    level_counts: dict[str, int] = {}
     error_logs = []
 
     for log in logs:
@@ -2863,7 +2863,7 @@ async def read_openapi_spec(
     # Handle search
     if search:
         search_lower = search.lower()
-        results = {"schemas": [], "paths": [], "fields": []}
+        results: dict[str, list[str]] = {"schemas": [], "paths": [], "fields": []}
 
         schemas = spec.get("components", {}).get("schemas", {})
         for name, schema in schemas.items():
