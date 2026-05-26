@@ -1,5 +1,6 @@
 """Tests for the WAPI MCP server module."""
 
+import pytest
 
 
 class TestServerImport:
@@ -188,3 +189,88 @@ class TestToolsAreCallable:
         """Test that otel_logs is callable."""
         import wapi_mcp_server
         assert callable(wapi_mcp_server.otel_logs)
+
+
+class TestGenAITracing:
+    """The traced_tool decorator emits OTel GenAI 'execute_tool' spans."""
+
+    def _make_in_memory_tracer(self, monkeypatch):
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+        from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+            InMemorySpanExporter,
+        )
+        import wapi_mcp.telemetry as telemetry
+
+        exporter = InMemorySpanExporter()
+        provider = TracerProvider()
+        provider.add_span_processor(SimpleSpanProcessor(exporter))
+        # trace_span() reads telemetry._tracer; point it at our in-memory tracer.
+        monkeypatch.setattr(telemetry, "_tracer", provider.get_tracer("test"))
+        return exporter
+
+    @pytest.mark.asyncio
+    async def test_success_span_has_gen_ai_attributes(self, monkeypatch):
+        import wapi_mcp_server as mcp
+
+        exporter = self._make_in_memory_tracer(monkeypatch)
+
+        @mcp.traced_tool
+        async def sample_tool(city: str = "NYC") -> str:
+            """Look up the weather for a city."""
+            return "sunny"
+
+        result = await sample_tool(city="Paris")
+        assert result == "sunny"
+
+        spans = exporter.get_finished_spans()
+        span = next(s for s in spans if s.name == "execute_tool sample_tool")
+        attrs = dict(span.attributes)
+        assert attrs["gen_ai.operation.name"] == "execute_tool"
+        assert attrs["gen_ai.tool.name"] == "sample_tool"
+        assert attrs["gen_ai.tool.type"] == "function"
+        assert attrs["gen_ai.tool.description"] == "Look up the weather for a city."
+        assert "Paris" in attrs["gen_ai.tool.call.arguments"]
+        assert attrs["gen_ai.tool.call.result"] == "sunny"
+
+    @pytest.mark.asyncio
+    async def test_error_span_sets_error_type(self, monkeypatch):
+        import wapi_mcp_server as mcp
+
+        exporter = self._make_in_memory_tracer(monkeypatch)
+
+        @mcp.traced_tool
+        async def boom_tool() -> str:
+            """A tool that fails."""
+            raise ValueError("nope")
+
+        # traced_tool swallows the exception and returns an error string.
+        result = await boom_tool()
+        assert "ERROR" in result
+
+        span = next(s for s in exporter.get_finished_spans() if s.name == "execute_tool boom_tool")
+        attrs = dict(span.attributes)
+        assert attrs["gen_ai.operation.name"] == "execute_tool"
+        assert attrs["gen_ai.tool.name"] == "boom_tool"
+        assert attrs["error.type"] == "ValueError"
+
+    @pytest.mark.asyncio
+    async def test_content_capture_opt_out(self, monkeypatch):
+        import wapi_mcp_server as mcp
+
+        monkeypatch.setenv("OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT", "false")
+        exporter = self._make_in_memory_tracer(monkeypatch)
+
+        @mcp.traced_tool
+        async def quiet_tool(secret: str = "x") -> str:
+            """A tool whose args should not be captured."""
+            return "done"
+
+        await quiet_tool(secret="hunter2")
+
+        span = next(s for s in exporter.get_finished_spans() if s.name == "execute_tool quiet_tool")
+        attrs = dict(span.attributes)
+        # Identity attributes still present; argument/result content omitted.
+        assert attrs["gen_ai.tool.name"] == "quiet_tool"
+        assert "gen_ai.tool.call.arguments" not in attrs
+        assert "gen_ai.tool.call.result" not in attrs

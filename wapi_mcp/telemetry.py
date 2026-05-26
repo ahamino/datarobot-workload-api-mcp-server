@@ -19,6 +19,40 @@ from contextlib import asynccontextmanager, contextmanager
 from typing import Any, Dict, Optional
 
 # ---------------------------------------------------------------------------
+# OpenTelemetry GenAI semantic conventions
+# https://opentelemetry.io/docs/specs/semconv/gen-ai/gen-ai-spans/
+# ---------------------------------------------------------------------------
+
+# "Execute Tool" span attribute keys.
+GEN_AI_OPERATION_NAME = "gen_ai.operation.name"
+GEN_AI_TOOL_NAME = "gen_ai.tool.name"
+GEN_AI_TOOL_TYPE = "gen_ai.tool.type"
+GEN_AI_TOOL_DESCRIPTION = "gen_ai.tool.description"
+GEN_AI_TOOL_CALL_ARGUMENTS = "gen_ai.tool.call.arguments"
+GEN_AI_TOOL_CALL_RESULT = "gen_ai.tool.call.result"
+
+# Value for gen_ai.operation.name when executing a tool.
+GEN_AI_OPERATION_EXECUTE_TOOL = "execute_tool"
+# Value for gen_ai.tool.type — MCP tools are function-style tools.
+GEN_AI_TOOL_TYPE_FUNCTION = "function"
+
+# Standard OTel error attribute (set on failed spans).
+ERROR_TYPE = "error.type"
+
+
+def genai_capture_content() -> bool:
+    """Whether to record tool call arguments/results on spans.
+
+    Follows the OTel GenAI opt-out env var. Tool arguments/results can contain
+    user data, so deployments can disable capture by setting this to a falsy value.
+    Defaults to enabled to preserve existing input/output capture behavior.
+    """
+    return os.environ.get(
+        "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT", "true"
+    ).strip().lower() in ("1", "true", "yes")
+
+
+# ---------------------------------------------------------------------------
 # Global State
 # ---------------------------------------------------------------------------
 
