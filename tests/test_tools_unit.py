@@ -970,12 +970,12 @@ class TestWorkloadReplacementTools:
     """Unit tests for workload replacement tools."""
 
     @pytest.mark.asyncio
-    async def test_workload_replacement_get(self):
-        """Test workload_replacement_get tool."""
+    async def test_artifact_replacement_get(self):
+        """Test artifact_replacement_get tool."""
         import wapi_mcp_server as mcp
 
         mock_client = AsyncMock()
-        mock_client.get_workload_replacement = AsyncMock(return_value={
+        mock_client.get_artifact_replacement = AsyncMock(return_value={
             "id": "repl123",
             "workloadId": "wkld123",
             "status": "switching",
@@ -986,21 +986,21 @@ class TestWorkloadReplacementTools:
         })
 
         with patch('wapi_mcp_server.get_client', return_value=mock_client):
-            result = await mcp.workload_replacement_get("wkld123")
+            result = await mcp.artifact_replacement_get("wkld123")
 
         assert isinstance(result, str)
         assert "repl123" in result
         assert "art456" in result
         assert "switching" in result
-        mock_client.get_workload_replacement.assert_called_once_with("wkld123")
+        mock_client.get_artifact_replacement.assert_called_once_with("wkld123")
 
     @pytest.mark.asyncio
-    async def test_workload_replacement_create(self):
-        """Test workload_replacement_create tool."""
+    async def test_artifact_replacement_create(self):
+        """Test artifact_replacement_create tool."""
         import wapi_mcp_server as mcp
 
         mock_client = AsyncMock()
-        mock_client.create_workload_replacement = AsyncMock(return_value={
+        mock_client.create_artifact_replacement = AsyncMock(return_value={
             "id": "repl123",
             "workloadId": "wkld123",
             "status": "submitted",
@@ -1011,46 +1011,46 @@ class TestWorkloadReplacementTools:
         })
 
         with patch('wapi_mcp_server.get_client', return_value=mock_client):
-            result = await mcp.workload_replacement_create(
+            result = await mcp.artifact_replacement_create(
                 "wkld123", "art456", warmup_duration_minutes=5
             )
 
         assert isinstance(result, str)
         assert "repl123" in result
-        mock_client.create_workload_replacement.assert_called_once()
-        _, payload = mock_client.create_workload_replacement.call_args[0]
+        mock_client.create_artifact_replacement.assert_called_once()
+        _, payload = mock_client.create_artifact_replacement.call_args[0]
         assert payload["artifactId"] == "art456"
         assert payload["strategy"] == "rolling"
         assert payload["config"]["warmupDurationMinutes"] == 5
 
     @pytest.mark.asyncio
-    async def test_workload_replacement_create_invalid_strategy(self):
+    async def test_artifact_replacement_create_invalid_strategy(self):
         """Invalid strategy is rejected without an API call."""
         import wapi_mcp_server as mcp
 
         mock_client = AsyncMock()
         with patch('wapi_mcp_server.get_client', return_value=mock_client):
-            result = await mcp.workload_replacement_create(
+            result = await mcp.artifact_replacement_create(
                 "wkld123", "art456", strategy="bluegreen"
             )
 
         assert "Error" in result
-        mock_client.create_workload_replacement.assert_not_called()
+        mock_client.create_artifact_replacement.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_workload_replacement_delete(self):
-        """Test workload_replacement_delete tool."""
+    async def test_artifact_replacement_delete(self):
+        """Test artifact_replacement_delete tool."""
         import wapi_mcp_server as mcp
 
         mock_client = AsyncMock()
-        mock_client.delete_workload_replacement = AsyncMock(return_value=None)
+        mock_client.delete_artifact_replacement = AsyncMock(return_value=None)
 
         with patch('wapi_mcp_server.get_client', return_value=mock_client):
-            result = await mcp.workload_replacement_delete("wkld123")
+            result = await mcp.artifact_replacement_delete("wkld123")
 
         assert isinstance(result, str)
         assert "wkld123" in result
-        mock_client.delete_workload_replacement.assert_called_once_with("wkld123")
+        mock_client.delete_artifact_replacement.assert_called_once_with("wkld123")
 
     @pytest.mark.asyncio
     async def test_artifact_build_delete(self):
@@ -1124,12 +1124,12 @@ class TestWorkloadReplacementTools:
         assert kwargs["artifact_type"] == "nim"
 
     @pytest.mark.asyncio
-    async def test_workload_replacement_create_with_runtime(self):
+    async def test_artifact_replacement_create_with_runtime(self):
         """runtime is forwarded into the replacement payload when provided."""
         import wapi_mcp_server as mcp
 
         mock_client = AsyncMock()
-        mock_client.create_workload_replacement = AsyncMock(return_value={
+        mock_client.create_artifact_replacement = AsyncMock(return_value={
             "id": "repl123", "workloadId": "wkld123", "status": "submitted",
             "strategy": "rolling", "candidateArtifactId": "art456",
             "config": {}, "createdAt": "2024-01-15T10:00:00Z",
@@ -1137,9 +1137,9 @@ class TestWorkloadReplacementTools:
         runtime = {"containerGroups": [{"name": "default", "replicaCount": 3}]}
 
         with patch('wapi_mcp_server.get_client', return_value=mock_client):
-            await mcp.workload_replacement_create("wkld123", "art456", runtime=runtime)
+            await mcp.artifact_replacement_create("wkld123", "art456", runtime=runtime)
 
-        _, payload = mock_client.create_workload_replacement.call_args[0]
+        _, payload = mock_client.create_artifact_replacement.call_args[0]
         assert payload["runtime"] == runtime
 
     @pytest.mark.asyncio

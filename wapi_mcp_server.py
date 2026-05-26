@@ -1329,7 +1329,7 @@ def _format_replacement(r: dict) -> str:
 
 @mcp.tool()
 @traced_tool
-async def workload_replacement_get(workload_id: str) -> str:
+async def artifact_replacement_get(workload_id: str) -> str:
     """Get the active (or most recent) replacement for a workload.
 
     A replacement is a rolling swap of the workload to a different artifact:
@@ -1340,13 +1340,13 @@ async def workload_replacement_get(workload_id: str) -> str:
         workload_id: The workload ID
     """
     client = await get_client()
-    replacement = await client.get_workload_replacement(workload_id)
+    replacement = await client.get_artifact_replacement(workload_id)
     return _format_replacement(replacement)
 
 
 @mcp.tool()
 @traced_tool
-async def workload_replacement_create(
+async def artifact_replacement_create(
     workload_id: str,
     artifact_id: str,
     strategy: str = "rolling",
@@ -1394,24 +1394,24 @@ async def workload_replacement_create(
         payload["runtime"] = runtime
 
     client = await get_client()
-    replacement = await client.create_workload_replacement(workload_id, payload)
+    replacement = await client.create_artifact_replacement(workload_id, payload)
     return (
         f"Replacement started for workload {workload_id}.\n\n"
         + _format_replacement(replacement)
-        + f"\n\nUse workload_replacement_get({workload_id}) to monitor progress."
+        + f"\n\nUse artifact_replacement_get({workload_id}) to monitor progress."
     )
 
 
 @mcp.tool()
 @traced_tool
-async def workload_replacement_delete(workload_id: str) -> str:
+async def artifact_replacement_delete(workload_id: str) -> str:
     """Cancel the in-progress replacement for a workload.
 
     Args:
         workload_id: The workload ID whose replacement should be cancelled
     """
     client = await get_client()
-    await client.delete_workload_replacement(workload_id)
+    await client.delete_artifact_replacement(workload_id)
     return f"Replacement for workload {workload_id} cancelled."
 
 

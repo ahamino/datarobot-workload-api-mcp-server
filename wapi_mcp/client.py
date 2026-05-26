@@ -461,13 +461,13 @@ class WapiClient:
 
     # -------------------- Replacements ---------------------------------
 
-    async def get_workload_replacement(self, workload_id: str) -> Dict[str, Any]:
+    async def get_artifact_replacement(self, workload_id: str) -> Dict[str, Any]:
         """Get the active (or most recent) replacement for a workload."""
         return await self.request(
             "GET", f"/api/v2/workloads/{workload_id}/replacement/"
         )
 
-    async def create_workload_replacement(
+    async def create_artifact_replacement(
         self, workload_id: str, payload: Dict[str, Any]
     ) -> Dict[str, Any]:
         """Start a replacement, swapping the workload to a different artifact."""
@@ -475,7 +475,7 @@ class WapiClient:
             "POST", f"/api/v2/workloads/{workload_id}/replacement/", json_body=payload
         )
 
-    async def delete_workload_replacement(self, workload_id: str) -> None:
+    async def delete_artifact_replacement(self, workload_id: str) -> None:
         """Cancel the in-progress replacement for a workload."""
         await self.request(
             "DELETE", f"/api/v2/workloads/{workload_id}/replacement/"

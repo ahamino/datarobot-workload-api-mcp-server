@@ -417,7 +417,7 @@ The assistant calls `bundle_list`, picks the bundle matching your requested GPU 
 | `workload_start` / `workload_stop` | Control workload lifecycle |
 | `workload_delete` | Remove workloads |
 | `workload_settings_get` / `workload_settings_update` | View/change replicas, resources, autoscaling |
-| `workload_replacement_get` / `workload_replacement_create` / `workload_replacement_delete` | Manage a rolling replacement to a different artifact |
+| `artifact_replacement_get` / `artifact_replacement_create` / `artifact_replacement_delete` | Manage a rolling replacement to a different artifact |
 | `workload_stats` | Get performance statistics (requests, errors, latency) |
 | `workload_history` | View artifact deployment history |
 | `artifact_update` | Update container spec (image, env vars, probes) |
