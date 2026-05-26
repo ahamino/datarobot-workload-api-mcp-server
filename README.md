@@ -377,7 +377,13 @@ The assistant calls `bundle_list`, picks the bundle matching your requested GPU 
 ### Example: Deploy New Versions
 
 > "Deploy artifact version v2.0 to workload abc123"
-> "Update the container image to myregistry/my-app:v2 and restart"
+> "Update workload abc123 to run artifact art-xyz"
+
+Deploying a different artifact is a **rolling artifact replacement** — the
+assistant uses `artifact_replacement_create` (zero downtime, endpoint preserved).
+Note "update the workload" is ambiguous: changing replicas/resources/autoscaling
+on the *same* artifact uses `workload_settings_update`, and changing only
+name/description/importance uses `workload_update`.
 
 ### Example: Work with Credentials
 

@@ -971,7 +971,16 @@ async def workload_update(
     description: Optional[str] = None,
     importance: Optional[str] = None,
 ) -> str:
-    """Update workload properties (name, description, importance).
+    """Update workload METADATA only (name, description, importance).
+
+    This does NOT change what the workload runs or how it runs. For a generic
+    "update the workload" request, pick the tool that matches the intent:
+    - Deploy a DIFFERENT artifact (new image / version / build):
+        -> artifact_replacement_create (rolling artifact swap)
+    - Change runtime only (replicas, resources, autoscaling) on the SAME artifact:
+        -> workload_settings_update
+    - Change name / description / importance:
+        -> this tool
 
     Args:
         workload_id: The workload ID to update
@@ -1028,7 +1037,10 @@ async def workload_settings_update(
 ) -> str:
     """Update workload runtime settings (replica count, resources, autoscaling).
 
-    This triggers a rolling replacement - the workload is redeployed with new settings.
+    Use this to change HOW the workload runs while keeping the SAME artifact. It
+    triggers a rolling replacement - the workload is redeployed with new settings.
+    To deploy a DIFFERENT artifact (new image/version), use
+    artifact_replacement_create instead (it can also swap runtime in one call).
 
     Args:
         workload_id: The workload ID to update
