@@ -54,6 +54,9 @@ docker run -p 8000:8000 \
 ```bash
 export DATAROBOT_API_ENDPOINT="https://your-datarobot-instance.com/api/v2"
 export DATAROBOT_API_TOKEN="your-api-token"
+# Optional: override the bundled OpenAPI spec location used by read_openapi_spec.
+# Defaults to the openapi.yaml next to the server script (in Docker: /app/openapi.yaml).
+# export OPENAPI_SPEC_PATH="/path/to/openapi.yaml"
 ```
 
 ### Run Locally (stdio)
