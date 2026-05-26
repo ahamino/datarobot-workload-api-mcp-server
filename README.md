@@ -352,6 +352,12 @@ The assistant will use the `workload_create` tool with the appropriate parameter
 
 The assistant will use `workload_create` with `credential_env_vars` to securely inject the credentials.
 
+### Example: GPU Workloads
+
+> "List the available GPU bundles, then create a workload 'llm-server' from image `myregistry/vllm:latest` on an L4 GPU"
+
+The assistant calls `bundle_list`, picks the bundle matching your requested GPU type/VRAM, and passes it via `resource_bundle_ids`. GPU **type** and **VRAM** always come from the bundle — they cannot be set directly.
+
 ### Example: List and Search Workloads
 
 > "List all running workloads"
@@ -651,6 +657,16 @@ Protons are the actual deployment instances of your workload. Use these tools fo
 | Tool | Description |
 |------|-------------|
 | `bundle_list` | List compute bundles (CPU/GPU configs) |
+
+> **GPU type and GPU VRAM are chosen by selecting a resource bundle.** There is no
+> `gpuType` or `gpuMemory` setting on a workload — to run on a specific GPU model
+> (L4, A10G, H100, …) or VRAM size, call `bundle_list` and pass the matching bundle
+> ID via `resource_bundle_ids`. The `gpu` parameter on `workload_create` only sets
+> the GPU **count**.
+>
+> **Select exactly one bundle.** `resource_bundle_ids` is a list for API
+> compatibility, but only a single bundle is allowed — pass a one-element list
+> (e.g. `["gpu.l4.small"]`).
 
 ### Credentials
 

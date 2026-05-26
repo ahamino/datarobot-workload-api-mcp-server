@@ -123,6 +123,39 @@ def parse_json_param(value, param_name: str):
             return value
     return value
 
+
+# Standard (built-in) autoscaling metrics. Custom NIM metric names (containing
+# ":") are also accepted and passed through for the API to validate.
+STANDARD_SCALING_METRICS = [
+    "cpuAverageUtilization",
+    "httpRequestsConcurrency",
+    "gpuCacheUtilization",
+    "gpuRequestQueueDepth",
+]
+# Metrics whose target is a percentage and must fall in 0..100.
+PERCENTAGE_SCALING_METRICS = {"cpuAverageUtilization", "gpuCacheUtilization"}
+
+
+def validate_autoscaling_policy(metric: str, target, min_count) -> Optional[str]:
+    """Validate one autoscaling policy against the spec. Returns an error string
+    or None if valid."""
+    if metric not in STANDARD_SCALING_METRICS and ":" not in metric:
+        return (
+            f"Error: autoscaling_metric must be one of {STANDARD_SCALING_METRICS}, or a "
+            f"custom NIM metric name (e.g. 'vllm:kv_cache_usage_perc'), got '{metric}'"
+        )
+    if metric in PERCENTAGE_SCALING_METRICS and target is not None and not (0 <= target <= 100):
+        return f"Error: target for {metric} is a percentage and must be between 0 and 100, got {target}"
+    # Scale-to-zero is only supported on httpRequestsConcurrency; the CPU/GPU
+    # metrics need at least one running replica to read a signal from.
+    if min_count is not None and min_count == 0 and metric != "httpRequestsConcurrency":
+        return (
+            f"Error: minCount=0 (scale-to-zero) is only supported on httpRequestsConcurrency, "
+            f"not {metric}. Use minCount>=1."
+        )
+    return None
+
+
 # Initialize FastMCP server
 mcp = FastMCP("wapi-mcp-server")
 
@@ -518,7 +551,6 @@ async def workload_create(
     liveness_probe_path: Optional[str] = None,
     entrypoint: Optional[list[str]] = None,
     gpu: Optional[int] = None,
-    gpu_type: Optional[str] = None,
     resource_bundle_ids: Optional[list[str]] = None,
     autoscaling_enabled: bool = False,
     autoscaling_min: int = 1,
@@ -537,6 +569,10 @@ async def workload_create(
     2. IF the user mentions GPU or asks for specific compute resources:
        a. Call bundle_list() to see available compute bundles (CPU/GPU configs)
        b. Use the appropriate bundle IDs in resource_bundle_ids parameter
+       NOTE: GPU TYPE (e.g. L4, A10G, H100) and GPU VRAM are NOT set directly —
+       they are determined entirely by which resource bundle you select. The
+       resourceAllocation block has no gpuType or gpuMemory field. To run on a
+       specific GPU model or VRAM size, pick the matching bundle from bundle_list().
     3. IF the user asks to inject credentials or mentions AWS/S3/database credentials:
        a. Call credential_list() to find available credentials and their IDs
        b. Call credential_keys() to see what field names are available for that credential type
@@ -557,11 +593,11 @@ async def workload_create(
     MINIMAL EXAMPLE:
         workload_create(name="my-app", image_uri="docker.io/user/myapp:latest")
 
-    WITH GPU (call bundle_list first to see available bundles):
+    WITH GPU (call bundle_list first — the bundle sets the GPU type AND VRAM):
         workload_create(
             name="my-gpu-app",
             image_uri="docker.io/user/myapp:latest",
-            resource_bundle_ids=["gpu.l4.small"]
+            resource_bundle_ids=["gpu.l4.small"]   # GPU model + VRAM come from this bundle
         )
 
     WITH AUTOSCALING:
@@ -607,9 +643,16 @@ async def workload_create(
         readiness_probe_path: Health check path (e.g., "/health", "/readyz")
         liveness_probe_path: Liveness check path (e.g., "/health", "/healthz")
         entrypoint: MUST BE A LIST - NEVER guess, look up image docs first!
-        gpu: Number of GPUs for inline artifact (e.g., 1)
-        gpu_type: GPU type for inline artifact (e.g., "nvidia-l4")
-        resource_bundle_ids: List of bundle IDs from bundle_list() for scheduling
+        gpu: Number of GPUs to request (count only). The GPU TYPE and GPU VRAM
+             are NOT set here — they come from the resource bundle you select.
+        resource_bundle_ids: Bundle ID from bundle_list() for scheduling, as a
+                             single-element list, e.g. ["gpu.l4.small"]. Choose
+                             EXACTLY ONE bundle — the field is a list for API
+                             compatibility but only one bundle is allowed. The
+                             selected bundle determines the GPU type (L4, A10G,
+                             H100, ...) AND the GPU VRAM. resourceAllocation has no
+                             gpuType/gpuMemory field, so a bundle is the ONLY way to
+                             pick a specific GPU model or VRAM size.
         autoscaling_enabled: Enable autoscaling (default: False)
         autoscaling_min: Minimum replicas when autoscaling (default: 1)
         autoscaling_max: Maximum replicas when autoscaling (default: 5)
@@ -656,16 +699,17 @@ async def workload_create(
 
     if resource_bundle_ids is not None and not isinstance(resource_bundle_ids, list):
         return f"Error: resource_bundle_ids must be a list, got {type(resource_bundle_ids).__name__}"
-
-    # Validate autoscaling metric. Standard metrics are validated against a known
-    # list; custom metric names (e.g. "vllm:kv_cache_usage_perc") are allowed for
-    # NIM artifacts and passed through for the API to validate.
-    standard_metrics = ["cpuAverageUtilization", "httpRequestsConcurrency", "gpuCacheUtilization", "gpuRequestQueueDepth"]
-    if autoscaling_metric not in standard_metrics and ":" not in autoscaling_metric:
+    if resource_bundle_ids is not None and len(resource_bundle_ids) > 1:
         return (
-            f"Error: autoscaling_metric must be one of {standard_metrics}, or a custom "
-            f"NIM metric name (e.g. 'vllm:kv_cache_usage_perc'), got '{autoscaling_metric}'"
+            "Error: select exactly one resource bundle. resource_bundle_ids is a list "
+            f"for API compatibility, but only a single bundle is allowed (got {len(resource_bundle_ids)})."
         )
+
+    # Validate autoscaling metric and its target/scale-to-zero constraints.
+    if autoscaling_enabled:
+        err = validate_autoscaling_policy(autoscaling_metric, autoscaling_target, autoscaling_min)
+        if err:
+            return err
 
     client = await get_client()
 
@@ -709,12 +753,12 @@ async def workload_create(
         payload["artifactId"] = artifact_id
     else:
         # Create inline artifact
-        # Build resource allocation for runtime (NOT in artifact spec)
+        # Build resource allocation for runtime (NOT in artifact spec).
+        # ResourceAllocation only accepts cpu/gpu/memory. To target a specific
+        # GPU type, use resource_bundle_ids (the bundle catalog carries GPU type).
         resource_allocation: dict = {"cpu": cpu, "memory": memory_bytes}
         if gpu is not None and gpu > 0:
             resource_allocation["gpu"] = gpu
-            if gpu_type:
-                resource_allocation["gpuType"] = gpu_type
 
         container: dict = {
             "name": "main",
@@ -989,7 +1033,8 @@ async def workload_settings_update(
     Args:
         workload_id: The workload ID to update
         replica_count: New fixed replica count (ignored if autoscaling enabled)
-        resource_bundle_ids: List of bundle IDs for scheduling (from bundle_list)
+        resource_bundle_ids: Single bundle ID for scheduling (from bundle_list),
+                          as a one-element list. Only one bundle may be selected.
         autoscaling_enabled: Enable or disable autoscaling
         autoscaling_min: Minimum replicas when autoscaling
         autoscaling_max: Maximum replicas when autoscaling
@@ -1003,16 +1048,18 @@ async def workload_settings_update(
     resource_bundle_ids = parse_json_param(resource_bundle_ids, "resource_bundle_ids")
     if resource_bundle_ids is not None and not isinstance(resource_bundle_ids, list):
         return f"Error: resource_bundle_ids must be a list, got {type(resource_bundle_ids).__name__}"
+    if resource_bundle_ids is not None and len(resource_bundle_ids) > 1:
+        return (
+            "Error: select exactly one resource bundle. resource_bundle_ids is a list "
+            f"for API compatibility, but only a single bundle is allowed (got {len(resource_bundle_ids)})."
+        )
 
-    # Validate autoscaling metric if provided. Custom metric names (e.g.
-    # "vllm:kv_cache_usage_perc") are allowed for NIM artifacts.
+    # Validate autoscaling metric/target/scale-to-zero if a metric is provided.
+    # Custom metric names (e.g. "vllm:kv_cache_usage_perc") are allowed for NIM.
     if autoscaling_metric is not None:
-        standard_metrics = ["cpuAverageUtilization", "httpRequestsConcurrency", "gpuCacheUtilization", "gpuRequestQueueDepth"]
-        if autoscaling_metric not in standard_metrics and ":" not in autoscaling_metric:
-            return (
-                f"Error: autoscaling_metric must be one of {standard_metrics}, or a custom "
-                f"NIM metric name (e.g. 'vllm:kv_cache_usage_perc'), got '{autoscaling_metric}'"
-            )
+        err = validate_autoscaling_policy(autoscaling_metric, autoscaling_target, autoscaling_min)
+        if err:
+            return err
 
     client = await get_client()
 
@@ -1305,6 +1352,7 @@ async def workload_replacement_create(
     strategy: str = "rolling",
     warmup_duration_minutes: int = 0,
     keep_old_version_minutes: int = 0,
+    runtime: Optional[dict] = None,
 ) -> str:
     """Start a replacement, swapping a workload to a different artifact.
 
@@ -1312,18 +1360,27 @@ async def workload_replacement_create(
     alongside the currently running version and traffic is switched to it once
     it is ready, after which the old version is decommissioned.
 
-    To change runtime settings (replicas, resources, autoscaling) of the SAME
-    artifact instead, use workload_settings_update().
+    The new artifact must match the current artifact's status — draft can only
+    replace draft, locked only locked. For the draft->locked transition use
+    workload_promote() instead. To change ONLY runtime settings (replicas,
+    resources, autoscaling) of the same artifact, use workload_settings_update().
 
     Args:
         workload_id: The workload ID to replace the artifact for
-        artifact_id: Existing artifact ID to deploy
+        artifact_id: Existing artifact ID to deploy (must match current draft/locked status)
         strategy: Replacement strategy (only "rolling" is supported)
         warmup_duration_minutes: Minutes to warm up the candidate before switching
         keep_old_version_minutes: Minutes to keep the old version after switching
+        runtime: Optional WorkloadRuntime to apply alongside the swap (replicas,
+                 resources, autoscaling). If omitted, the current runtime is reused.
+                 Shape: {"containerGroups": [{"name": "default", ...}]}
     """
     if strategy != "rolling":
         return f"Error: strategy must be 'rolling', got '{strategy}'"
+
+    runtime = parse_json_param(runtime, "runtime")
+    if runtime is not None and not isinstance(runtime, dict):
+        return f"Error: runtime must be an object, got {type(runtime).__name__}"
 
     payload: dict = {
         "artifactId": artifact_id,
@@ -1333,6 +1390,8 @@ async def workload_replacement_create(
             "keepOldVersionMinutes": keep_old_version_minutes,
         },
     }
+    if runtime is not None:
+        payload["runtime"] = runtime
 
     client = await get_client()
     replacement = await client.create_workload_replacement(workload_id, payload)
@@ -1632,42 +1691,38 @@ async def artifact_create(
     name: str,
     image_uri: str,
     port: int = 8000,
-    cpu: float = 1.0,
-    memory_bytes: int = 536870912,
     description: Optional[str] = None,
     environment_vars: Optional[list[dict]] = None,
     readiness_probe_path: Optional[str] = None,
     liveness_probe_path: Optional[str] = None,
     entrypoint: Optional[list[str]] = None,
-    gpu: Optional[int] = None,
-    gpu_type: Optional[str] = None,
     artifact_type: str = "service",
 ) -> str:
     """Create a new container artifact (reusable workload template).
 
-    Artifacts define container configuration. They start in 'draft' status
-    allowing iteration. Use artifact_lock to make them immutable ('locked').
+    Artifacts define WHAT to run — image, port, entrypoint, env vars, probes.
+    They start in 'draft' status allowing iteration; use artifact_lock to make
+    them immutable ('locked').
+
+    Note: resources (CPU/memory/GPU, replicas, autoscaling) are NOT part of the
+    artifact — they are set on the workload's runtime. Pass cpu/memory/gpu or
+    resource_bundle_ids to workload_create, or change them later with
+    workload_settings_update.
 
     IMPORTANT SCHEMA REQUIREMENTS:
     - type must be "service" (default) or "nim" for NVIDIA NIMs
     - Port must be >= 1024 (non-privileged ports only)
-    - CPU and memory are REQUIRED for resourceRequest
-    - For GPU artifacts, specify both gpu (count) and gpu_type
     - Entrypoint must be array of strings: ["python", "-m", "app"]
 
     Args:
         name: Artifact name (required)
         image_uri: Container image URI (e.g., "docker.io/user/image:tag")
         port: Container port, must be >= 1024 (default: 8000)
-        cpu: CPU cores to allocate (default: 1.0)
-        memory_bytes: Memory in bytes (default: 536870912 = 512MB)
         description: Optional artifact description
         environment_vars: List of {"name": "VAR", "value": "val"} environment variables
         readiness_probe_path: HTTP path for readiness probe (e.g., "/readyz")
         liveness_probe_path: HTTP path for liveness probe (e.g., "/healthz")
         entrypoint: Container entrypoint as array (e.g., ["python", "-m", "myapp"])
-        gpu: Number of GPUs to allocate (e.g., 1)
-        gpu_type: GPU type when gpu > 0 (e.g., "nvidia-l4", "nvidia-a10g")
         artifact_type: "service" (default) or "nim"
 
     Returns artifact in 'draft' status. Use artifact_lock to make immutable.
@@ -1681,20 +1736,13 @@ async def artifact_create(
 
     client = await get_client()
 
-    # Build resource request
-    resource_request: dict = {"cpu": cpu, "memory": memory_bytes}
-    if gpu is not None and gpu > 0:
-        resource_request["gpu"] = gpu
-        if gpu_type:
-            resource_request["gpuType"] = gpu_type
-
-    # Build container spec
+    # Build container spec. Resources are a runtime concern (set on the workload),
+    # not part of the artifact's Container schema.
     container: dict = {
         "name": "main",
         "imageUri": image_uri,
         "port": port,
         "primary": True,
-        "resourceRequest": resource_request,
     }
 
     if entrypoint:
@@ -1755,19 +1803,19 @@ async def artifact_update(
     description: Optional[str] = None,
     image_uri: Optional[str] = None,
     port: Optional[int] = None,
-    cpu: Optional[float] = None,
-    memory_bytes: Optional[int] = None,
     environment_vars: Optional[list[dict]] = None,
     readiness_probe_path: Optional[str] = None,
     liveness_probe_path: Optional[str] = None,
     entrypoint: Optional[list[str]] = None,
-    gpu: Optional[int] = None,
-    gpu_type: Optional[str] = None,
 ) -> str:
     """Update an existing draft artifact (PATCH).
 
     Only artifacts with status='draft' can be updated.
     Provide only the fields you want to change.
+
+    Note: resources (CPU/memory/GPU, replicas, autoscaling) live on the
+    workload's runtime, not the artifact. To change them, use
+    workload_settings_update — not this tool.
 
     IMPORTANT: After updating, restart any workloads using this artifact
     to pick up the changes (workload_stop then workload_start).
@@ -1778,14 +1826,10 @@ async def artifact_update(
         description: New artifact description
         image_uri: New container image URI
         port: New container port (must be >= 1024)
-        cpu: New CPU allocation
-        memory_bytes: New memory allocation in bytes
         environment_vars: New environment variables (replaces existing)
         readiness_probe_path: New readiness probe path
         liveness_probe_path: New liveness probe path
         entrypoint: New container entrypoint as array
-        gpu: New GPU count
-        gpu_type: New GPU type
     """
     if port is not None and port < 1024:
         return f"Error: Port must be >= 1024 (got {port}). Non-privileged ports only."
@@ -1805,10 +1849,9 @@ async def artifact_update(
 
     # Build container updates if any container fields provided
     container_fields = {
-        "image_uri": image_uri, "port": port, "cpu": cpu, "memory_bytes": memory_bytes,
+        "image_uri": image_uri, "port": port,
         "environment_vars": environment_vars, "readiness_probe_path": readiness_probe_path,
         "liveness_probe_path": liveness_probe_path, "entrypoint": entrypoint,
-        "gpu": gpu, "gpu_type": gpu_type
     }
 
     if any(v is not None for v in container_fields.values()):
@@ -1828,18 +1871,6 @@ async def artifact_update(
             container["entrypoint"] = entrypoint
         if environment_vars is not None:
             container["environmentVars"] = environment_vars
-
-        # Update resource request
-        resource_request = container.get("resourceRequest", {})
-        if cpu is not None:
-            resource_request["cpu"] = cpu
-        if memory_bytes is not None:
-            resource_request["memory"] = memory_bytes
-        if gpu is not None:
-            resource_request["gpu"] = gpu
-        if gpu_type is not None:
-            resource_request["gpuType"] = gpu_type
-        container["resourceRequest"] = resource_request
 
         # Update probes
         if readiness_probe_path is not None:
@@ -2157,9 +2188,14 @@ async def artifact_repo_delete(repo_id: str) -> str:
 async def bundle_list() -> str:
     """List available compute bundles - CALL THIS BEFORE creating workloads!
 
-    Returns available CPU and GPU configurations. Use the bundle ID with
-    workload_create(resource_bundle_id="...") or note the gpu_type for
-    workload_create(gpu=1, gpu_type="...").
+    Returns available CPU and GPU configurations. Use a single bundle ID with
+    workload_create(resource_bundle_ids=["..."]). Choose EXACTLY ONE bundle —
+    the parameter is a list for API compatibility but only one is allowed.
+
+    GPU TYPE AND GPU VRAM ARE DETERMINED BY THE BUNDLE. There is no gpuType or
+    gpuMemory field on a workload — selecting a resource bundle is the ONLY way
+    to choose the GPU model (L4, A10G, H100, ...) and its VRAM. The `gpu`
+    parameter on workload_create only sets the GPU count.
 
     Common bundles:
     - cpu.small, cpu.medium, cpu.large: CPU-only workloads
@@ -2198,13 +2234,15 @@ async def bundle_list() -> str:
         result_str += "\n".join(cpu_bundles) + "\n\n"
 
     if gpu_bundles:
-        result_str += "GPU BUNDLES (use resource_bundle_id or set gpu + gpu_type):\n"
+        result_str += "GPU BUNDLES (the bundle sets the GPU type AND VRAM):\n"
         result_str += "\n".join(gpu_bundles) + "\n\n"
 
     result_str += """USAGE:
-  Option 1 - Use bundle ID: workload_create(..., resource_bundle_id="cpu.small")
-  Option 2 - Specify resources: workload_create(..., cpu=2, memory_bytes=4294967296)
-  Option 3 - For GPU: workload_create(..., gpu=1, gpu_type="nvidia-l4")"""
+  Option 1 - Use one bundle ID: workload_create(..., resource_bundle_ids=["cpu.small"])
+             (pick EXACTLY ONE bundle — only a single bundle is allowed)
+  Option 2 - CPU/memory only: workload_create(..., cpu=2, memory_bytes=4294967296)
+  GPU type + VRAM: choose a GPU bundle above via resource_bundle_ids — they are
+  NOT settable any other way (no gpuType/gpuMemory field)."""
 
     return result_str
 

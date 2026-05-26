@@ -1123,4 +1123,127 @@ class TestWorkloadReplacementTools:
         _, kwargs = mock_client.list_workloads.call_args
         assert kwargs["artifact_type"] == "nim"
 
+    @pytest.mark.asyncio
+    async def test_workload_replacement_create_with_runtime(self):
+        """runtime is forwarded into the replacement payload when provided."""
+        import wapi_mcp_server as mcp
+
+        mock_client = AsyncMock()
+        mock_client.create_workload_replacement = AsyncMock(return_value={
+            "id": "repl123", "workloadId": "wkld123", "status": "submitted",
+            "strategy": "rolling", "candidateArtifactId": "art456",
+            "config": {}, "createdAt": "2024-01-15T10:00:00Z",
+        })
+        runtime = {"containerGroups": [{"name": "default", "replicaCount": 3}]}
+
+        with patch('wapi_mcp_server.get_client', return_value=mock_client):
+            await mcp.workload_replacement_create("wkld123", "art456", runtime=runtime)
+
+        _, payload = mock_client.create_workload_replacement.call_args[0]
+        assert payload["runtime"] == runtime
+
+    @pytest.mark.asyncio
+    async def test_workload_create_rejects_bad_percentage_target(self):
+        """A >100 target on a percentage metric is rejected."""
+        import wapi_mcp_server as mcp
+
+        mock_client = AsyncMock()
+        with patch('wapi_mcp_server.get_client', return_value=mock_client):
+            result = await mcp.workload_create(
+                name="wl", image_uri="nginx:latest", port=8080,
+                autoscaling_enabled=True,
+                autoscaling_metric="cpuAverageUtilization",
+                autoscaling_target=150,
+            )
+
+        assert "Error" in result and "percentage" in result
+        mock_client.create_workload.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_workload_create_rejects_scale_to_zero_on_cpu(self):
+        """minCount=0 is only valid on httpRequestsConcurrency."""
+        import wapi_mcp_server as mcp
+
+        mock_client = AsyncMock()
+        with patch('wapi_mcp_server.get_client', return_value=mock_client):
+            result = await mcp.workload_create(
+                name="wl", image_uri="nginx:latest", port=8080,
+                autoscaling_enabled=True,
+                autoscaling_metric="cpuAverageUtilization",
+                autoscaling_min=0,
+            )
+
+        assert "Error" in result and "scale-to-zero" in result
+        mock_client.create_workload.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_workload_create_allows_scale_to_zero_on_http(self):
+        """minCount=0 is accepted on httpRequestsConcurrency."""
+        import wapi_mcp_server as mcp
+
+        mock_client = AsyncMock()
+        mock_client.create_workload = AsyncMock(return_value={
+            "id": "wkld123", "name": "wl", "status": "submitted",
+            "artifactId": "art123", "endpoint": "",
+        })
+        mock_client._build_url = lambda path: f"https://example.com{path}"
+
+        with patch('wapi_mcp_server.get_client', return_value=mock_client):
+            result = await mcp.workload_create(
+                name="wl", image_uri="nginx:latest", port=8080,
+                autoscaling_enabled=True,
+                autoscaling_metric="httpRequestsConcurrency",
+                autoscaling_target=10, autoscaling_min=0,
+            )
+
+        assert "Error" not in result
+        mock_client.create_workload.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_workload_create_rejects_multiple_bundles(self):
+        """Only one resource bundle may be selected."""
+        import wapi_mcp_server as mcp
+
+        mock_client = AsyncMock()
+        with patch('wapi_mcp_server.get_client', return_value=mock_client):
+            result = await mcp.workload_create(
+                name="wl", image_uri="nginx:latest", port=8080,
+                resource_bundle_ids=["gpu.l4.small", "gpu.a10g.medium"],
+            )
+
+        assert "Error" in result and "one resource bundle" in result
+        mock_client.create_workload.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_workload_settings_update_rejects_multiple_bundles(self):
+        """workload_settings_update also allows only one bundle."""
+        import wapi_mcp_server as mcp
+
+        mock_client = AsyncMock()
+        with patch('wapi_mcp_server.get_client', return_value=mock_client):
+            result = await mcp.workload_settings_update(
+                "wkld123", resource_bundle_ids=["a", "b"],
+            )
+
+        assert "Error" in result and "one resource bundle" in result
+        mock_client.update_workload_settings.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_artifact_create_omits_resources(self):
+        """artifact_create must not put resourceRequest/resourceAllocation in the spec."""
+        import wapi_mcp_server as mcp
+
+        mock_client = AsyncMock()
+        mock_client.create_artifact = AsyncMock(return_value={
+            "id": "art123", "name": "a", "status": "draft",
+        })
+
+        with patch('wapi_mcp_server.get_client', return_value=mock_client):
+            await mcp.artifact_create(name="a", image_uri="nginx:latest", port=8080)
+
+        payload = mock_client.create_artifact.call_args[0][0]
+        container = payload["spec"]["containerGroups"][0]["containers"][0]
+        assert "resourceRequest" not in container
+        assert "resourceAllocation" not in container
+
 
