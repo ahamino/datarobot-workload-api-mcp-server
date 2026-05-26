@@ -26,7 +26,22 @@ from wapi_mcp.helpers import (
     wait_for_status,
     wait_for_workload_with_progress,
 )
-from wapi_mcp.telemetry import LOG, init_telemetry, trace_span, record_tool_call
+from wapi_mcp.telemetry import (
+    LOG,
+    init_telemetry,
+    trace_span,
+    record_tool_call,
+    genai_capture_content,
+    GEN_AI_OPERATION_NAME,
+    GEN_AI_OPERATION_EXECUTE_TOOL,
+    GEN_AI_TOOL_NAME,
+    GEN_AI_TOOL_TYPE,
+    GEN_AI_TOOL_TYPE_FUNCTION,
+    GEN_AI_TOOL_DESCRIPTION,
+    GEN_AI_TOOL_CALL_ARGUMENTS,
+    GEN_AI_TOOL_CALL_RESULT,
+    ERROR_TYPE,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -181,13 +196,30 @@ def traced_tool(func):
     @wraps(func)
     async def wrapper(*args, **kwargs):
         tool_name = func.__name__
+        # First line of the docstring serves as the tool description.
+        tool_description = (func.__doc__ or "").strip().split("\n", 1)[0][:1024]
+        capture_content = genai_capture_content()
         start_time = time.time()
         LOG.info(f"Tool call: {tool_name}")
 
         # Serialize input for tracing (truncate to avoid huge spans)
         input_str = json.dumps(kwargs, default=str)[:2000] if kwargs else "{}"
 
-        with trace_span(f"tool/{tool_name}", {"tool.name": tool_name, "tool.input": input_str}) as span:
+        # OTel GenAI "execute_tool" span conventions, plus the legacy tool.*
+        # attributes for back-compat with existing dashboards.
+        span_attrs = {
+            GEN_AI_OPERATION_NAME: GEN_AI_OPERATION_EXECUTE_TOOL,
+            GEN_AI_TOOL_NAME: tool_name,
+            GEN_AI_TOOL_TYPE: GEN_AI_TOOL_TYPE_FUNCTION,
+            GEN_AI_TOOL_DESCRIPTION: tool_description,
+            "tool.name": tool_name,
+        }
+        if capture_content:
+            span_attrs["tool.input"] = input_str
+            span_attrs[GEN_AI_TOOL_CALL_ARGUMENTS] = input_str
+
+        # Span name follows the convention: "execute_tool {gen_ai.tool.name}".
+        with trace_span(f"{GEN_AI_OPERATION_EXECUTE_TOOL} {tool_name}", span_attrs) as span:
             try:
                 result = await func(*args, **kwargs)
                 duration_ms = (time.time() - start_time) * 1000
@@ -195,9 +227,11 @@ def traced_tool(func):
                 if span:
                     span.set_attribute("tool.status", "success")
                     span.set_attribute("tool.duration_ms", duration_ms)
-                    # Truncate output to avoid huge spans
-                    output_str = str(result)[:2000] if result else ""
-                    span.set_attribute("tool.output", output_str)
+                    if capture_content:
+                        # Truncate output to avoid huge spans
+                        output_str = str(result)[:2000] if result else ""
+                        span.set_attribute("tool.output", output_str)
+                        span.set_attribute(GEN_AI_TOOL_CALL_RESULT, output_str)
                 LOG.info(f"Tool {tool_name} completed in {duration_ms:.1f}ms")
                 return result
 
@@ -207,8 +241,10 @@ def traced_tool(func):
                 record_tool_call(tool_name, "error", duration_ms, error_type)
                 if span:
                     span.set_attribute("tool.status", "error")
+                    span.set_attribute(ERROR_TYPE, error_type)
                     span.set_attribute("tool.error_type", error_type)
-                    span.set_attribute("tool.output", f"ERROR: {str(e)[:500]}")
+                    if capture_content:
+                        span.set_attribute("tool.output", f"ERROR: {str(e)[:500]}")
                 LOG.error(f"Tool {tool_name} failed after {duration_ms:.1f}ms: {e}")
 
                 # Return formatted error message instead of raising

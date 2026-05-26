@@ -799,8 +799,9 @@ datarobot-workload-api-mcp-server/
 | `DATAROBOT_API_TOKEN` | Yes | Bearer token for authentication |
 | `WAPI_MCP_SERVER_WORKLOAD_ID` | For proxy | Workload ID for start-mcp.sh proxy script |
 | `OPENAPI_SPEC_PATH` | No | Path to OpenAPI spec (default: /app/openapi.yaml) |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | No | OpenTelemetry collector endpoint |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | No | OpenTelemetry collector endpoint (enables tool-call tracing/metrics) |
 | `OTEL_SERVICE_NAME` | No | Service name (default: wapi-mcp-server) |
+| `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` | No | Capture tool arguments/results on spans (default: true; set false to omit) |
 | `LOG_LEVEL` | No | Logging level (default: INFO) |
 
 ## Health Endpoints
@@ -868,6 +869,26 @@ This points to the DataRobot HTTP OTEL collector (OTLP/HTTP protocol on port 431
    - `otel_traces(workload_id)` - Request traces (requires instrumentation)
    - `otel_trace_get(workload_id, trace_id)` - Trace details
    - `otel_metrics(workload_id)` - Collected metrics (requires instrumentation)
+
+### Tool-call tracing (GenAI conventions)
+
+When `OTEL_EXPORTER_OTLP_ENDPOINT` is set, this server emits a span for every MCP
+tool call following the [OpenTelemetry GenAI "execute_tool" semantic
+conventions](https://opentelemetry.io/docs/specs/semconv/gen-ai/gen-ai-spans/):
+
+- Span name: `execute_tool {tool_name}`
+- `gen_ai.operation.name` = `execute_tool`
+- `gen_ai.tool.name` = the tool name
+- `gen_ai.tool.type` = `function`
+- `gen_ai.tool.description` = the tool's summary
+- `gen_ai.tool.call.arguments` / `gen_ai.tool.call.result` = the call input/output
+- `error.type` = the exception class name on failure
+
+Argument/result capture can contain user data; disable it by setting
+`OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=false` (identity attributes
+like `gen_ai.tool.name` are still emitted). The legacy `tool.*` attributes
+(`tool.name`, `tool.input`, `tool.output`, `tool.status`, `tool.duration_ms`)
+are also kept for back-compat.
 
 ### WAPI MCP Server Telemetry
 
