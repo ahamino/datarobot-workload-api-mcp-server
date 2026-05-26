@@ -123,6 +123,39 @@ def parse_json_param(value, param_name: str):
             return value
     return value
 
+
+# Standard (built-in) autoscaling metrics. Custom NIM metric names (containing
+# ":") are also accepted and passed through for the API to validate.
+STANDARD_SCALING_METRICS = [
+    "cpuAverageUtilization",
+    "httpRequestsConcurrency",
+    "gpuCacheUtilization",
+    "gpuRequestQueueDepth",
+]
+# Metrics whose target is a percentage and must fall in 0..100.
+PERCENTAGE_SCALING_METRICS = {"cpuAverageUtilization", "gpuCacheUtilization"}
+
+
+def validate_autoscaling_policy(metric: str, target, min_count) -> Optional[str]:
+    """Validate one autoscaling policy against the spec. Returns an error string
+    or None if valid."""
+    if metric not in STANDARD_SCALING_METRICS and ":" not in metric:
+        return (
+            f"Error: autoscaling_metric must be one of {STANDARD_SCALING_METRICS}, or a "
+            f"custom NIM metric name (e.g. 'vllm:kv_cache_usage_perc'), got '{metric}'"
+        )
+    if metric in PERCENTAGE_SCALING_METRICS and target is not None and not (0 <= target <= 100):
+        return f"Error: target for {metric} is a percentage and must be between 0 and 100, got {target}"
+    # Scale-to-zero is only supported on httpRequestsConcurrency; the CPU/GPU
+    # metrics need at least one running replica to read a signal from.
+    if min_count is not None and min_count == 0 and metric != "httpRequestsConcurrency":
+        return (
+            f"Error: minCount=0 (scale-to-zero) is only supported on httpRequestsConcurrency, "
+            f"not {metric}. Use minCount>=1."
+        )
+    return None
+
+
 # Initialize FastMCP server
 mcp = FastMCP("wapi-mcp-server")
 
@@ -273,6 +306,7 @@ async def workload_list(
     status: Optional[str] = None,
     importance: Optional[str] = None,
     artifact_status: Optional[str] = None,
+    artifact_type: Optional[str] = None,
     artifact_id: Optional[str] = None,
     repository_id: Optional[str] = None,
     created_by: Optional[str] = None,
@@ -284,11 +318,12 @@ async def workload_list(
     Args:
         limit: Maximum number of workloads to return (default: 100)
         offset: Number of workloads to skip for pagination (default: 0)
-        status: Filter by proton status. Valid values:
-                unknown, submitted, initializing, provisioning, launching,
-                running, warming, draining, stopping, stopped, errored, terminated
+        status: Filter by workload status. Valid values:
+                unknown, submitted, provisioning, launching, running,
+                suspended, interrupted, stopping, stopped, errored, terminated
         importance: Filter by importance (critical, high, moderate, low)
         artifact_status: Filter by artifact status (draft, locked)
+        artifact_type: Filter by artifact type (service, nim)
         artifact_id: Filter by specific artifact ID
         repository_id: Filter by artifact repository ID
         created_by: Filter by creator user ID
@@ -311,6 +346,7 @@ async def workload_list(
         status=status_list,
         importance=importance_list,
         artifact_status=artifact_status_list,
+        artifact_type=artifact_type,
         artifact_id=artifact_id,
         repository_id=repository_id,
         created_by=created_by,
@@ -515,7 +551,6 @@ async def workload_create(
     liveness_probe_path: Optional[str] = None,
     entrypoint: Optional[list[str]] = None,
     gpu: Optional[int] = None,
-    gpu_type: Optional[str] = None,
     resource_bundle_ids: Optional[list[str]] = None,
     autoscaling_enabled: bool = False,
     autoscaling_min: int = 1,
@@ -534,6 +569,10 @@ async def workload_create(
     2. IF the user mentions GPU or asks for specific compute resources:
        a. Call bundle_list() to see available compute bundles (CPU/GPU configs)
        b. Use the appropriate bundle IDs in resource_bundle_ids parameter
+       NOTE: GPU TYPE (e.g. L4, A10G, H100) and GPU VRAM are NOT set directly —
+       they are determined entirely by which resource bundle you select. The
+       resourceAllocation block has no gpuType or gpuMemory field. To run on a
+       specific GPU model or VRAM size, pick the matching bundle from bundle_list().
     3. IF the user asks to inject credentials or mentions AWS/S3/database credentials:
        a. Call credential_list() to find available credentials and their IDs
        b. Call credential_keys() to see what field names are available for that credential type
@@ -554,11 +593,11 @@ async def workload_create(
     MINIMAL EXAMPLE:
         workload_create(name="my-app", image_uri="docker.io/user/myapp:latest")
 
-    WITH GPU (call bundle_list first to see available bundles):
+    WITH GPU (call bundle_list first — the bundle sets the GPU type AND VRAM):
         workload_create(
             name="my-gpu-app",
             image_uri="docker.io/user/myapp:latest",
-            resource_bundle_ids=["gpu.l4.small"]
+            resource_bundle_ids=["gpu.l4.small"]   # GPU model + VRAM come from this bundle
         )
 
     WITH AUTOSCALING:
@@ -604,14 +643,24 @@ async def workload_create(
         readiness_probe_path: Health check path (e.g., "/health", "/readyz")
         liveness_probe_path: Liveness check path (e.g., "/health", "/healthz")
         entrypoint: MUST BE A LIST - NEVER guess, look up image docs first!
-        gpu: Number of GPUs for inline artifact (e.g., 1)
-        gpu_type: GPU type for inline artifact (e.g., "nvidia-l4")
-        resource_bundle_ids: List of bundle IDs from bundle_list() for scheduling
+        gpu: Number of GPUs to request (count only). The GPU TYPE and GPU VRAM
+             are NOT set here — they come from the resource bundle you select.
+        resource_bundle_ids: Bundle ID from bundle_list() for scheduling, as a
+                             single-element list, e.g. ["gpu.l4.small"]. Choose
+                             EXACTLY ONE bundle — the field is a list for API
+                             compatibility but only one bundle is allowed. The
+                             selected bundle determines the GPU type (L4, A10G,
+                             H100, ...) AND the GPU VRAM. resourceAllocation has no
+                             gpuType/gpuMemory field, so a bundle is the ONLY way to
+                             pick a specific GPU model or VRAM size.
         autoscaling_enabled: Enable autoscaling (default: False)
         autoscaling_min: Minimum replicas when autoscaling (default: 1)
         autoscaling_max: Maximum replicas when autoscaling (default: 5)
-        autoscaling_metric: Scaling metric - cpuAverageUtilization, httpRequestsConcurrency,
-                           gpuCacheUtilization, gpuRequestQueueDepth (default: cpuAverageUtilization)
+        autoscaling_metric: Scaling metric - one of the standard metrics
+                           (cpuAverageUtilization, httpRequestsConcurrency,
+                           gpuCacheUtilization, gpuRequestQueueDepth) or a custom
+                           metric name for NIM artifacts, e.g. "vllm:kv_cache_usage_perc"
+                           (default: cpuAverageUtilization)
         autoscaling_target: Target value for the scaling metric (default: 70)
         importance: Importance level: "low", "moderate", "high", "critical" (default: low)
         description: Optional workload description
@@ -650,11 +699,17 @@ async def workload_create(
 
     if resource_bundle_ids is not None and not isinstance(resource_bundle_ids, list):
         return f"Error: resource_bundle_ids must be a list, got {type(resource_bundle_ids).__name__}"
+    if resource_bundle_ids is not None and len(resource_bundle_ids) > 1:
+        return (
+            "Error: select exactly one resource bundle. resource_bundle_ids is a list "
+            f"for API compatibility, but only a single bundle is allowed (got {len(resource_bundle_ids)})."
+        )
 
-    # Validate autoscaling metric
-    valid_metrics = ["cpuAverageUtilization", "httpRequestsConcurrency", "gpuCacheUtilization", "gpuRequestQueueDepth"]
-    if autoscaling_metric not in valid_metrics:
-        return f"Error: autoscaling_metric must be one of {valid_metrics}, got '{autoscaling_metric}'"
+    # Validate autoscaling metric and its target/scale-to-zero constraints.
+    if autoscaling_enabled:
+        err = validate_autoscaling_policy(autoscaling_metric, autoscaling_target, autoscaling_min)
+        if err:
+            return err
 
     client = await get_client()
 
@@ -698,12 +753,12 @@ async def workload_create(
         payload["artifactId"] = artifact_id
     else:
         # Create inline artifact
-        # Build resource allocation for runtime (NOT in artifact spec)
+        # Build resource allocation for runtime (NOT in artifact spec).
+        # ResourceAllocation only accepts cpu/gpu/memory. To target a specific
+        # GPU type, use resource_bundle_ids (the bundle catalog carries GPU type).
         resource_allocation: dict = {"cpu": cpu, "memory": memory_bytes}
         if gpu is not None and gpu > 0:
             resource_allocation["gpu"] = gpu
-            if gpu_type:
-                resource_allocation["gpuType"] = gpu_type
 
         container: dict = {
             "name": "main",
@@ -730,16 +785,16 @@ async def workload_create(
                 if not isinstance(cred_env, dict):
                     return "Error: Each credential_env_var must be a dict with 'name', 'credential_id', 'key'"
 
-                name = cred_env.get("name")
+                env_name = cred_env.get("name")
                 cred_id = cred_env.get("credential_id")
                 key = cred_env.get("key")
 
-                if not all([name, cred_id, key]):
+                if not all([env_name, cred_id, key]):
                     return f"Error: credential_env_var missing required fields (name, credential_id, key): {cred_env}"
 
                 cred_envs.append({
                     "source": "dr-credential",
-                    "name": name,
+                    "name": env_name,
                     "drCredentialId": cred_id,
                     "key": key
                 })
@@ -916,7 +971,16 @@ async def workload_update(
     description: Optional[str] = None,
     importance: Optional[str] = None,
 ) -> str:
-    """Update workload properties (name, description, importance).
+    """Update workload METADATA only (name, description, importance).
+
+    This does NOT change what the workload runs or how it runs. For a generic
+    "update the workload" request, pick the tool that matches the intent:
+    - Deploy a DIFFERENT artifact (new image / version / build):
+        -> artifact_replacement_create (rolling artifact swap)
+    - Change runtime only (replicas, resources, autoscaling) on the SAME artifact:
+        -> workload_settings_update
+    - Change name / description / importance:
+        -> this tool
 
     Args:
         workload_id: The workload ID to update
@@ -973,29 +1037,41 @@ async def workload_settings_update(
 ) -> str:
     """Update workload runtime settings (replica count, resources, autoscaling).
 
-    This triggers a rolling replacement - the workload is redeployed with new settings.
+    Use this to change HOW the workload runs while keeping the SAME artifact. It
+    triggers a rolling replacement - the workload is redeployed with new settings.
+    To deploy a DIFFERENT artifact (new image/version), use
+    artifact_replacement_create instead (it can also swap runtime in one call).
 
     Args:
         workload_id: The workload ID to update
         replica_count: New fixed replica count (ignored if autoscaling enabled)
-        resource_bundle_ids: List of bundle IDs for scheduling (from bundle_list)
+        resource_bundle_ids: Single bundle ID for scheduling (from bundle_list),
+                          as a one-element list. Only one bundle may be selected.
         autoscaling_enabled: Enable or disable autoscaling
         autoscaling_min: Minimum replicas when autoscaling
         autoscaling_max: Maximum replicas when autoscaling
-        autoscaling_metric: Scaling metric - cpuAverageUtilization, httpRequestsConcurrency,
-                          gpuCacheUtilization, gpuRequestQueueDepth
+        autoscaling_metric: Scaling metric - one of the standard metrics
+                          (cpuAverageUtilization, httpRequestsConcurrency,
+                          gpuCacheUtilization, gpuRequestQueueDepth) or a custom
+                          metric name for NIM artifacts, e.g. "vllm:kv_cache_usage_perc"
         autoscaling_target: Target value for the scaling metric
     """
     # Parse list parameter that may have been stringified by MCP client
     resource_bundle_ids = parse_json_param(resource_bundle_ids, "resource_bundle_ids")
     if resource_bundle_ids is not None and not isinstance(resource_bundle_ids, list):
         return f"Error: resource_bundle_ids must be a list, got {type(resource_bundle_ids).__name__}"
+    if resource_bundle_ids is not None and len(resource_bundle_ids) > 1:
+        return (
+            "Error: select exactly one resource bundle. resource_bundle_ids is a list "
+            f"for API compatibility, but only a single bundle is allowed (got {len(resource_bundle_ids)})."
+        )
 
-    # Validate autoscaling metric if provided
+    # Validate autoscaling metric/target/scale-to-zero if a metric is provided.
+    # Custom metric names (e.g. "vllm:kv_cache_usage_perc") are allowed for NIM.
     if autoscaling_metric is not None:
-        valid_metrics = ["cpuAverageUtilization", "httpRequestsConcurrency", "gpuCacheUtilization", "gpuRequestQueueDepth"]
-        if autoscaling_metric not in valid_metrics:
-            return f"Error: autoscaling_metric must be one of {valid_metrics}, got '{autoscaling_metric}'"
+        err = validate_autoscaling_policy(autoscaling_metric, autoscaling_target, autoscaling_min)
+        if err:
+            return err
 
     client = await get_client()
 
@@ -1244,6 +1320,113 @@ The artifact is now locked and immutable.
 Stats have been reset."""
 
 
+def _format_replacement(r: dict) -> str:
+    """Render a Replacement object as a readable summary."""
+    config = r.get("config") or {}
+    lines = [
+        f"Replacement {r.get('id', 'N/A')}:",
+        f"Workload: {r.get('workloadId', 'N/A')}",
+        f"Status: {r.get('status', 'N/A')}",
+        f"Strategy: {r.get('strategy', 'N/A')}",
+        f"Candidate artifact: {r.get('candidateArtifactId', 'N/A')}",
+        f"Warmup (min): {config.get('warmupDurationMinutes', 0)}",
+        f"Keep old version (min): {config.get('keepOldVersionMinutes', 0)}",
+        f"Created: {format_created_at(r.get('createdAt', ''))}",
+        f"Switched: {format_created_at(r.get('switchedAt', '')) if r.get('switchedAt') else 'N/A'}",
+    ]
+    if r.get("message"):
+        lines.append(f"Message: {r['message']}")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+@traced_tool
+async def artifact_replacement_get(workload_id: str) -> str:
+    """Get the active (or most recent) replacement for a workload.
+
+    A replacement is a rolling swap of the workload to a different artifact:
+    the candidate is deployed alongside the running version, traffic switches
+    once it is ready, then the old version is decommissioned.
+
+    Args:
+        workload_id: The workload ID
+    """
+    client = await get_client()
+    replacement = await client.get_artifact_replacement(workload_id)
+    return _format_replacement(replacement)
+
+
+@mcp.tool()
+@traced_tool
+async def artifact_replacement_create(
+    workload_id: str,
+    artifact_id: str,
+    strategy: str = "rolling",
+    warmup_duration_minutes: int = 0,
+    keep_old_version_minutes: int = 0,
+    runtime: Optional[dict] = None,
+) -> str:
+    """Start a replacement, swapping a workload to a different artifact.
+
+    This performs a rolling replacement: the candidate artifact is deployed
+    alongside the currently running version and traffic is switched to it once
+    it is ready, after which the old version is decommissioned.
+
+    The new artifact must match the current artifact's status — draft can only
+    replace draft, locked only locked. For the draft->locked transition use
+    workload_promote() instead. To change ONLY runtime settings (replicas,
+    resources, autoscaling) of the same artifact, use workload_settings_update().
+
+    Args:
+        workload_id: The workload ID to replace the artifact for
+        artifact_id: Existing artifact ID to deploy (must match current draft/locked status)
+        strategy: Replacement strategy (only "rolling" is supported)
+        warmup_duration_minutes: Minutes to warm up the candidate before switching
+        keep_old_version_minutes: Minutes to keep the old version after switching
+        runtime: Optional WorkloadRuntime to apply alongside the swap (replicas,
+                 resources, autoscaling). If omitted, the current runtime is reused.
+                 Shape: {"containerGroups": [{"name": "default", ...}]}
+    """
+    if strategy != "rolling":
+        return f"Error: strategy must be 'rolling', got '{strategy}'"
+
+    runtime = parse_json_param(runtime, "runtime")
+    if runtime is not None and not isinstance(runtime, dict):
+        return f"Error: runtime must be an object, got {type(runtime).__name__}"
+
+    payload: dict = {
+        "artifactId": artifact_id,
+        "strategy": strategy,
+        "config": {
+            "warmupDurationMinutes": warmup_duration_minutes,
+            "keepOldVersionMinutes": keep_old_version_minutes,
+        },
+    }
+    if runtime is not None:
+        payload["runtime"] = runtime
+
+    client = await get_client()
+    replacement = await client.create_artifact_replacement(workload_id, payload)
+    return (
+        f"Replacement started for workload {workload_id}.\n\n"
+        + _format_replacement(replacement)
+        + f"\n\nUse artifact_replacement_get({workload_id}) to monitor progress."
+    )
+
+
+@mcp.tool()
+@traced_tool
+async def artifact_replacement_delete(workload_id: str) -> str:
+    """Cancel the in-progress replacement for a workload.
+
+    Args:
+        workload_id: The workload ID whose replacement should be cancelled
+    """
+    client = await get_client()
+    await client.delete_artifact_replacement(workload_id)
+    return f"Replacement for workload {workload_id} cancelled."
+
+
 @mcp.tool()
 @traced_tool
 async def proton_list(workload_id: str, limit: int = 10, offset: int = 0) -> str:
@@ -1379,8 +1562,10 @@ Replicas: {len(replicas)}
             result += "Conditions:\n"
             for cond in conditions:
                 ctype = cond.get("type", "")
-                met = cond.get("met")
-                since = cond.get("since", "")
+                # Field names were renamed: met -> value, since -> lastTransitionTime.
+                # Fall back to the old names for backward compatibility.
+                met = cond.get("value", cond.get("met"))
+                since = cond.get("lastTransitionTime", cond.get("since", ""))
                 status_icon = "[OK]" if met else "[--]"
                 result += f"  {status_icon} {ctype}: {since}\n"
 
@@ -1518,42 +1703,38 @@ async def artifact_create(
     name: str,
     image_uri: str,
     port: int = 8000,
-    cpu: float = 1.0,
-    memory_bytes: int = 536870912,
     description: Optional[str] = None,
     environment_vars: Optional[list[dict]] = None,
     readiness_probe_path: Optional[str] = None,
     liveness_probe_path: Optional[str] = None,
     entrypoint: Optional[list[str]] = None,
-    gpu: Optional[int] = None,
-    gpu_type: Optional[str] = None,
     artifact_type: str = "service",
 ) -> str:
     """Create a new container artifact (reusable workload template).
 
-    Artifacts define container configuration. They start in 'draft' status
-    allowing iteration. Use artifact_lock to make them immutable ('locked').
+    Artifacts define WHAT to run — image, port, entrypoint, env vars, probes.
+    They start in 'draft' status allowing iteration; use artifact_lock to make
+    them immutable ('locked').
+
+    Note: resources (CPU/memory/GPU, replicas, autoscaling) are NOT part of the
+    artifact — they are set on the workload's runtime. Pass cpu/memory/gpu or
+    resource_bundle_ids to workload_create, or change them later with
+    workload_settings_update.
 
     IMPORTANT SCHEMA REQUIREMENTS:
     - type must be "service" (default) or "nim" for NVIDIA NIMs
     - Port must be >= 1024 (non-privileged ports only)
-    - CPU and memory are REQUIRED for resourceRequest
-    - For GPU artifacts, specify both gpu (count) and gpu_type
     - Entrypoint must be array of strings: ["python", "-m", "app"]
 
     Args:
         name: Artifact name (required)
         image_uri: Container image URI (e.g., "docker.io/user/image:tag")
         port: Container port, must be >= 1024 (default: 8000)
-        cpu: CPU cores to allocate (default: 1.0)
-        memory_bytes: Memory in bytes (default: 536870912 = 512MB)
         description: Optional artifact description
         environment_vars: List of {"name": "VAR", "value": "val"} environment variables
         readiness_probe_path: HTTP path for readiness probe (e.g., "/readyz")
         liveness_probe_path: HTTP path for liveness probe (e.g., "/healthz")
         entrypoint: Container entrypoint as array (e.g., ["python", "-m", "myapp"])
-        gpu: Number of GPUs to allocate (e.g., 1)
-        gpu_type: GPU type when gpu > 0 (e.g., "nvidia-l4", "nvidia-a10g")
         artifact_type: "service" (default) or "nim"
 
     Returns artifact in 'draft' status. Use artifact_lock to make immutable.
@@ -1567,20 +1748,13 @@ async def artifact_create(
 
     client = await get_client()
 
-    # Build resource request
-    resource_request: dict = {"cpu": cpu, "memory": memory_bytes}
-    if gpu is not None and gpu > 0:
-        resource_request["gpu"] = gpu
-        if gpu_type:
-            resource_request["gpuType"] = gpu_type
-
-    # Build container spec
+    # Build container spec. Resources are a runtime concern (set on the workload),
+    # not part of the artifact's Container schema.
     container: dict = {
         "name": "main",
         "imageUri": image_uri,
         "port": port,
         "primary": True,
-        "resourceRequest": resource_request,
     }
 
     if entrypoint:
@@ -1641,37 +1815,38 @@ async def artifact_update(
     description: Optional[str] = None,
     image_uri: Optional[str] = None,
     port: Optional[int] = None,
-    cpu: Optional[float] = None,
-    memory_bytes: Optional[int] = None,
     environment_vars: Optional[list[dict]] = None,
     readiness_probe_path: Optional[str] = None,
     liveness_probe_path: Optional[str] = None,
     entrypoint: Optional[list[str]] = None,
-    gpu: Optional[int] = None,
-    gpu_type: Optional[str] = None,
 ) -> str:
-    """Update an existing draft artifact (PATCH).
+    """Update an artifact's spec/metadata. Provide only the fields to change.
 
-    Only artifacts with status='draft' can be updated.
-    Provide only the fields you want to change.
+    DRAFT artifacts are edited in place.
 
-    IMPORTANT: After updating, restart any workloads using this artifact
-    to pick up the changes (workload_stop then workload_start).
+    LOCKED artifacts are immutable, so they cannot be edited directly. When the
+    target is locked, this tool instead CLONES it into a new DRAFT under the same
+    artifact repository and applies the edits to that clone — the original locked
+    artifact is left untouched. The new draft's ID is returned; nothing is deployed.
+
+    Note: resources (CPU/memory/GPU, replicas, autoscaling) live on the
+    workload's runtime, not the artifact. To change them, use
+    workload_settings_update — not this tool.
+
+    To roll the updated artifact out to a running workload, use
+    artifact_replacement_create (rollouts require draft<->draft / locked<->locked,
+    so a workload on a locked artifact needs the new draft locked first).
 
     Args:
         artifact_id: The artifact ID to update
-        name: New artifact name
+        name: New artifact name (also used as the clone name when the source is locked)
         description: New artifact description
         image_uri: New container image URI
         port: New container port (must be >= 1024)
-        cpu: New CPU allocation
-        memory_bytes: New memory allocation in bytes
         environment_vars: New environment variables (replaces existing)
         readiness_probe_path: New readiness probe path
         liveness_probe_path: New liveness probe path
         entrypoint: New container entrypoint as array
-        gpu: New GPU count
-        gpu_type: New GPU type
     """
     if port is not None and port < 1024:
         return f"Error: Port must be >= 1024 (got {port}). Non-privileged ports only."
@@ -1682,6 +1857,25 @@ async def artifact_update(
 
     client = await get_client()
 
+    # Fetch the artifact first: we need its status (draft vs locked), name, repo,
+    # and spec (as the merge base for container edits).
+    current = await client.get_artifact(artifact_id)
+    is_locked = current.get("status") == "locked"
+    repo_id = current.get("artifactRepositoryId")
+    source_name = current.get("name", "")
+
+    # Locked artifacts are immutable. Clone into the same repository and apply the
+    # edits to the resulting DRAFT; the original locked artifact is left untouched.
+    target_id = artifact_id
+    if is_locked:
+        clone_name = name if name is not None else source_name
+        clone = await client.clone_artifact(artifact_id, clone_name)
+        target_id = clone.get("id", "")
+        # The clone copies the source's fields (including repository) as a new
+        # draft; use it as the merge base and don't re-apply the name below.
+        current = clone
+        name = None
+
     payload: dict = {}
 
     if name is not None:
@@ -1689,17 +1883,19 @@ async def artifact_update(
     if description is not None:
         payload["description"] = description
 
+    # Keep the new draft under the same repository as the locked source if the
+    # clone didn't already inherit it.
+    if is_locked and repo_id and not current.get("artifactRepositoryId"):
+        payload["artifactRepositoryId"] = repo_id
+
     # Build container updates if any container fields provided
     container_fields = {
-        "image_uri": image_uri, "port": port, "cpu": cpu, "memory_bytes": memory_bytes,
+        "image_uri": image_uri, "port": port,
         "environment_vars": environment_vars, "readiness_probe_path": readiness_probe_path,
         "liveness_probe_path": liveness_probe_path, "entrypoint": entrypoint,
-        "gpu": gpu, "gpu_type": gpu_type
     }
 
     if any(v is not None for v in container_fields.values()):
-        # Need to fetch current spec and update it
-        current = await client.get_artifact(artifact_id)
         current_spec = current.get("spec", {})
         container_groups = current_spec.get("containerGroups", [{}])
         containers = container_groups[0].get("containers", [{}]) if container_groups else [{}]
@@ -1714,18 +1910,6 @@ async def artifact_update(
             container["entrypoint"] = entrypoint
         if environment_vars is not None:
             container["environmentVars"] = environment_vars
-
-        # Update resource request
-        resource_request = container.get("resourceRequest", {})
-        if cpu is not None:
-            resource_request["cpu"] = cpu
-        if memory_bytes is not None:
-            resource_request["memory"] = memory_bytes
-        if gpu is not None:
-            resource_request["gpu"] = gpu
-        if gpu_type is not None:
-            resource_request["gpuType"] = gpu_type
-        container["resourceRequest"] = resource_request
 
         # Update probes
         if readiness_probe_path is not None:
@@ -1749,17 +1933,36 @@ async def artifact_update(
             }]
         }
 
-    if not payload:
+    # For a locked source the clone alone may already capture the change (e.g. a
+    # rename), so an empty payload there is fine — for a draft it is an error.
+    if not payload and not is_locked:
         return "Error: No fields provided to update."
 
-    artifact = await client.patch_artifact(artifact_id, payload)
+    artifact = await client.patch_artifact(target_id, payload) if payload else current
+
+    if is_locked:
+        new_repo = artifact.get("artifactRepositoryId") or repo_id or "N/A"
+        return f"""Source artifact {artifact_id} is LOCKED (immutable) — created a new DRAFT clone instead.
+
+New draft artifact: {target_id}
+Name: {artifact.get("name", "N/A")}
+Status: {artifact.get("status", "draft")}
+Artifact repository: {new_repo} (same as source)
+
+Your edits were applied to the new draft; the original locked artifact is unchanged.
+
+To deploy it to a workload (rollouts require draft<->draft / locked<->locked):
+  - Workload running a LOCKED artifact: lock the new draft first, then roll out:
+      artifact_lock(artifact_id="{target_id}", repository_id="{new_repo}")
+      artifact_replacement_create(workload_id="<id>", artifact_id="{target_id}")
+  - Workload running a DRAFT artifact: roll it out directly:
+      artifact_replacement_create(workload_id="<id>", artifact_id="{target_id}")"""
 
     return f"""Updated artifact {artifact_id}:
 Status: {artifact.get("status", "unknown")}
 
-Changes applied. If workloads use this artifact, restart them to pick up changes:
-  1. workload_stop(workload_ids=[...])
-  2. workload_start(workload_id=..., wait_for_running=True)
+Changes applied. To roll the update out to a running workload (zero downtime):
+  artifact_replacement_create(workload_id="<id>", artifact_id="{artifact_id}")
 
 Full response:
 {json.dumps(artifact, indent=2)}"""
@@ -1879,6 +2082,23 @@ Updated: {updated}
         result += "\nBuild in progress. Check again later."
 
     return result
+
+
+@mcp.tool()
+@traced_tool
+async def artifact_build_delete(artifact_id: str, build_id: str) -> str:
+    """Cancel or delete an image build for a DRAFT artifact.
+
+    Only works for draft artifacts; builds for locked (immutable) artifacts
+    cannot be deleted.
+
+    Args:
+        artifact_id: The artifact ID
+        build_id: The build ID to cancel/delete
+    """
+    client = await get_client()
+    await client.delete_artifact_build(artifact_id, build_id)
+    return f"Build {build_id} for artifact {artifact_id} cancelled/deleted."
 
 
 @mcp.tool()
@@ -2026,9 +2246,14 @@ async def artifact_repo_delete(repo_id: str) -> str:
 async def bundle_list() -> str:
     """List available compute bundles - CALL THIS BEFORE creating workloads!
 
-    Returns available CPU and GPU configurations. Use the bundle ID with
-    workload_create(resource_bundle_id="...") or note the gpu_type for
-    workload_create(gpu=1, gpu_type="...").
+    Returns available CPU and GPU configurations. Use a single bundle ID with
+    workload_create(resource_bundle_ids=["..."]). Choose EXACTLY ONE bundle —
+    the parameter is a list for API compatibility but only one is allowed.
+
+    GPU TYPE AND GPU VRAM ARE DETERMINED BY THE BUNDLE. There is no gpuType or
+    gpuMemory field on a workload — selecting a resource bundle is the ONLY way
+    to choose the GPU model (L4, A10G, H100, ...) and its VRAM. The `gpu`
+    parameter on workload_create only sets the GPU count.
 
     Common bundles:
     - cpu.small, cpu.medium, cpu.large: CPU-only workloads
@@ -2067,13 +2292,15 @@ async def bundle_list() -> str:
         result_str += "\n".join(cpu_bundles) + "\n\n"
 
     if gpu_bundles:
-        result_str += "GPU BUNDLES (use resource_bundle_id or set gpu + gpu_type):\n"
+        result_str += "GPU BUNDLES (the bundle sets the GPU type AND VRAM):\n"
         result_str += "\n".join(gpu_bundles) + "\n\n"
 
     result_str += """USAGE:
-  Option 1 - Use bundle ID: workload_create(..., resource_bundle_id="cpu.small")
-  Option 2 - Specify resources: workload_create(..., cpu=2, memory_bytes=4294967296)
-  Option 3 - For GPU: workload_create(..., gpu=1, gpu_type="nvidia-l4")"""
+  Option 1 - Use one bundle ID: workload_create(..., resource_bundle_ids=["cpu.small"])
+             (pick EXACTLY ONE bundle — only a single bundle is allowed)
+  Option 2 - CPU/memory only: workload_create(..., cpu=2, memory_bytes=4294967296)
+  GPU type + VRAM: choose a GPU bundle above via resource_bundle_ids — they are
+  NOT settable any other way (no gpuType/gpuMemory field)."""
 
     return result_str
 
@@ -2139,7 +2366,7 @@ async def get_credential_schemas() -> dict[str, list[str]]:
 
         # Extract credential schemas from components/schemas
         schemas = spec.get("components", {}).get("schemas", {})
-        credential_schemas = {}
+        credential_schemas: dict[str, list[str]] = {}
 
         # Parse CredentialsUpdate schema which has all field definitions
         # with descriptions indicating which credential type each field belongs to
@@ -2420,7 +2647,7 @@ async def otel_logs(
     output = f"=== OTEL LOGS FOR WORKLOAD {workload_id} ===\n"
     output += f"Showing {len(logs)} log entries (level >= {level})\n\n"
 
-    level_counts = {}
+    level_counts: dict[str, int] = {}
     error_logs = []
 
     for log in logs:
@@ -2601,16 +2828,22 @@ async def otel_metrics(workload_id: str) -> str:
 # OpenAPI Spec Tool
 # ---------------------------------------------------------------------------
 
+# Path to the bundled OpenAPI spec. Override with OPENAPI_SPEC_PATH; otherwise
+# default to the openapi.yaml sitting next to this script, which works both in
+# the container (/app/openapi.yaml) and for local/stdio runs from the repo.
 OPENAPI_SPEC_PATH = Path(os.environ.get(
     "OPENAPI_SPEC_PATH",
-    "/app/openapi.yaml"
+    str(Path(__file__).resolve().parent / "openapi.yaml")
 ))
 
 _openapi_cache: Optional[dict] = None
+_openapi_remote_cache: Optional[dict] = None
+
+REMOTE_SOURCE_ALIASES = {"remote", "master", "live", "server"}
 
 
 def _load_openapi_spec() -> dict:
-    """Load and cache the OpenAPI spec."""
+    """Load and cache the bundled (local) OpenAPI spec."""
     global _openapi_cache
 
     if _openapi_cache is None:
@@ -2621,6 +2854,52 @@ def _load_openapi_spec() -> dict:
     return _openapi_cache
 
 
+async def _load_openapi_spec_remote() -> dict:
+    """Fetch and cache the live master spec from {DATAROBOT_API_ENDPOINT}/openapi.yaml.
+
+    The bundled spec can lag the deployed API; the remote source is the source of
+    truth for whatever environment DATAROBOT_API_ENDPOINT points at.
+    """
+    global _openapi_remote_cache
+
+    if _openapi_remote_cache is None:
+        import aiohttp
+
+        client = await get_client()
+        url = f"{client.base_url}/openapi.yaml"
+        LOG.info(f"Fetching master OpenAPI spec from {url}")
+        headers = {"Authorization": f"Bearer {client.token}"}
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                url, headers=headers, timeout=aiohttp.ClientTimeout(total=15)
+            ) as resp:
+                if resp.status != 200:
+                    raise RuntimeError(
+                        f"Failed to fetch master OpenAPI spec from {url}: HTTP {resp.status}"
+                    )
+                text = await resp.text()
+        _openapi_remote_cache = yaml.safe_load(text)
+    return _openapi_remote_cache
+
+
+# Cap on any single read_openapi_spec response so the full spec (~160KB) never
+# lands in the agent's context. Targeted lookups (one schema/path) stay well under
+# this; anything larger is truncated with guidance to narrow the query.
+MAX_OPENAPI_RESPONSE_CHARS = 12000
+
+
+def _dump_capped(obj, max_chars: int = MAX_OPENAPI_RESPONSE_CHARS) -> str:
+    """YAML-dump an object, truncating to keep responses out of context bloat."""
+    text = yaml.dump(obj, default_flow_style=False, sort_keys=False)
+    if len(text) > max_chars:
+        text = (
+            text[:max_chars]
+            + f"\n\n... [truncated at {max_chars} chars]. Narrow your query — request a "
+            "specific schema_name, path, or search term instead of a whole section."
+        )
+    return text
+
+
 @mcp.tool()
 @traced_tool
 async def read_openapi_spec(
@@ -2628,49 +2907,63 @@ async def read_openapi_spec(
     search: Optional[str] = None,
     schema_name: Optional[str] = None,
     path: Optional[str] = None,
+    source: str = "local",
 ) -> str:
     """Query the Workload API OpenAPI specification.
 
     Use this tool to understand the API schema, available endpoints, request/response
-    formats, and valid field values before making API calls.
+    formats, and valid field values before making API calls. Queries are targeted
+    and return bounded output — the full ~160KB spec is never returned at once, so
+    request the specific schema_name, path, search term, or section list you need.
+
+    Two sources are available:
+    - "local" (default): the spec bundled with this server. Fast, offline.
+    - "remote" (aka "master"/"live"): fetched from {DATAROBOT_API_ENDPOINT}/openapi.yaml
+      — the source of truth for the deployed environment. Use this when you suspect
+      the bundled spec is behind, or to confirm what the live API actually accepts.
 
     USAGE EXAMPLES:
-        # Get overview
+        # Overview of the bundled spec
         read_openapi_spec()
-
-        # Get all schema definitions
-        read_openapi_spec(section="schemas")
 
         # Get a specific schema by name
         read_openapi_spec(schema_name="CreateWorkloadRequest")
 
-        # Get details for a specific API path
-        read_openapi_spec(path="/workloads")
+        # Search the LIVE master spec for a keyword
+        read_openapi_spec(search="replica", source="remote")
 
-        # Search for keywords
-        read_openapi_spec(search="replica")
+        # Inspect an endpoint on the live spec
+        read_openapi_spec(path="/workloads", source="master")
 
     Args:
-        section: Section to retrieve: "info", "paths", "schemas", or "all"
+        section: Section to retrieve: "info", "paths", or "schemas" (lists names,
+                 not full bodies). There is no full-spec dump — use targeted queries.
         search: Search for a keyword in schema/field names (case-insensitive)
         schema_name: Get a specific schema definition by exact name
         path: Get details for a specific API path (e.g., "/workloads")
+        source: Which spec to query: "local" (bundled, default) or "remote"/"master"/
+                "live" (fetched from {DATAROBOT_API_ENDPOINT}/openapi.yaml).
 
     Returns formatted spec information.
     """
+    use_remote = source.lower() in REMOTE_SOURCE_ALIASES
     try:
-        spec = _load_openapi_spec()
+        spec = await _load_openapi_spec_remote() if use_remote else _load_openapi_spec()
     except FileNotFoundError as e:
         return f"Error: {e}"
+    except Exception as e:
+        return f"Error fetching master OpenAPI spec: {e}"
+
+    source_label = "MASTER (live)" if use_remote else "local (bundled)"
 
     # Handle specific schema lookup
     if schema_name:
         schemas = spec.get("components", {}).get("schemas", {})
         if schema_name in schemas:
-            return f"=== SCHEMA: {schema_name} ===\n\n{yaml.dump(schemas[schema_name], default_flow_style=False, sort_keys=False)}"
+            return f"=== SCHEMA: {schema_name} ===\n\n{_dump_capped(schemas[schema_name])}"
         for name, schema in schemas.items():
             if name.lower() == schema_name.lower():
-                return f"=== SCHEMA: {name} ===\n\n{yaml.dump(schema, default_flow_style=False, sort_keys=False)}"
+                return f"=== SCHEMA: {name} ===\n\n{_dump_capped(schema)}"
         similar = [n for n in schemas.keys() if schema_name.lower() in n.lower()]
         if similar:
             return f"Schema '{schema_name}' not found. Similar schemas:\n" + "\n".join(f"  - {n}" for n in similar[:10])
@@ -2682,19 +2975,19 @@ async def read_openapi_spec(
         if not path.startswith("/"):
             path = "/" + path
         if path in paths:
-            return f"=== PATH: {path} ===\n\n{yaml.dump(paths[path], default_flow_style=False, sort_keys=False)}"
+            return f"=== PATH: {path} ===\n\n{_dump_capped(paths[path])}"
         matching = [p for p in paths.keys() if path in p]
         if matching:
             result = f"Paths matching '{path}':\n\n"
             for p in matching[:5]:
-                result += f"=== {p} ===\n{yaml.dump(paths[p], default_flow_style=False, sort_keys=False)}\n\n"
+                result += f"=== {p} ===\n{_dump_capped(paths[p])}\n\n"
             return result
         return f"Path '{path}' not found. Use read_openapi_spec(section='paths') to see all."
 
     # Handle search
     if search:
         search_lower = search.lower()
-        results = {"schemas": [], "paths": [], "fields": []}
+        results: dict[str, list[str]] = {"schemas": [], "paths": [], "fields": []}
 
         schemas = spec.get("components", {}).get("schemas", {})
         for name, schema in schemas.items():
@@ -2737,13 +3030,23 @@ async def read_openapi_spec(
 
         return output
 
-    # Handle section retrieval
+    # Handle section retrieval. Note: there is intentionally no "dump the whole
+    # spec" option — the full spec is ~160KB and would flood the agent context.
+    # Use targeted queries (schema_name, path, search) or the section lists below.
     if section == "all":
-        return yaml.dump(spec, default_flow_style=False, sort_keys=False)
+        return (
+            "The full spec is too large to return (it would flood context). Query it "
+            "in pieces instead:\n"
+            "  read_openapi_spec(section='paths')   - list endpoints\n"
+            "  read_openapi_spec(section='schemas') - list schemas\n"
+            "  read_openapi_spec(schema_name='X')   - one schema\n"
+            "  read_openapi_spec(path='/workloads') - one endpoint\n"
+            "  read_openapi_spec(search='replica')  - search by keyword"
+        )
 
     if section == "info":
         info = spec.get("info", {})
-        return f"=== API INFO ===\n\n{yaml.dump(info, default_flow_style=False, sort_keys=False)}"
+        return f"=== API INFO ===\n\n{_dump_capped(info)}"
 
     if section == "schemas":
         schemas = spec.get("components", {}).get("schemas", {})
@@ -2782,6 +3085,7 @@ async def read_openapi_spec(
     schemas = spec.get("components", {}).get("schemas", {})
 
     output = f"""=== WORKLOAD API OPENAPI SPEC OVERVIEW ===
+Source: {source_label}
 
 Title: {info.get('title', 'N/A')}
 Version: {info.get('version', 'N/A')}
@@ -2795,6 +3099,7 @@ COMMON QUERIES:
   read_openapi_spec(schema_name="X")     - Get specific schema
   read_openapi_spec(path="/workloads")   - Get endpoint details
   read_openapi_spec(search="replica")    - Search for keyword
+  read_openapi_spec(search="X", source="remote") - Query the live master spec
 
 KEY PATHS:
 """

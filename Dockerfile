@@ -14,8 +14,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY --chown=appuser:appuser wapi_mcp_server.py .
 COPY --chown=appuser:appuser wapi_mcp/ ./wapi_mcp/
 
-# Copy OpenAPI spec
+# Copy OpenAPI spec and point the server at it explicitly.
+# read_openapi_spec() reads OPENAPI_SPEC_PATH (defaults to /app/openapi.yaml).
 COPY --chown=appuser:appuser openapi.yaml .
+ENV OPENAPI_SPEC_PATH=/app/openapi.yaml
 
 # Switch to non-root user
 USER appuser

@@ -54,6 +54,9 @@ docker run -p 8000:8000 \
 ```bash
 export DATAROBOT_API_ENDPOINT="https://your-datarobot-instance.com/api/v2"
 export DATAROBOT_API_TOKEN="your-api-token"
+# Optional: override the bundled OpenAPI spec location used by read_openapi_spec.
+# Defaults to the openapi.yaml next to the server script (in Docker: /app/openapi.yaml).
+# export OPENAPI_SPEC_PATH="/path/to/openapi.yaml"
 ```
 
 ### Run Locally (stdio)
@@ -352,6 +355,12 @@ The assistant will use the `workload_create` tool with the appropriate parameter
 
 The assistant will use `workload_create` with `credential_env_vars` to securely inject the credentials.
 
+### Example: GPU Workloads
+
+> "List the available GPU bundles, then create a workload 'llm-server' from image `myregistry/vllm:latest` on an L4 GPU"
+
+The assistant calls `bundle_list`, picks the bundle matching your requested GPU type/VRAM, and passes it via `resource_bundle_ids`. GPU **type** and **VRAM** always come from the bundle — they cannot be set directly.
+
 ### Example: List and Search Workloads
 
 > "List all running workloads"
@@ -371,7 +380,13 @@ The assistant will use `workload_create` with `credential_env_vars` to securely 
 ### Example: Deploy New Versions
 
 > "Deploy artifact version v2.0 to workload abc123"
-> "Update the container image to myregistry/my-app:v2 and restart"
+> "Update workload abc123 to run artifact art-xyz"
+
+Deploying a different artifact is a **rolling artifact replacement** — the
+assistant uses `artifact_replacement_create` (zero downtime, endpoint preserved).
+Note "update the workload" is ambiguous: changing replicas/resources/autoscaling
+on the *same* artifact uses `workload_settings_update`, and changing only
+name/description/importance uses `workload_update`.
 
 ### Example: Work with Credentials
 
@@ -406,15 +421,17 @@ The assistant will use `workload_create` with `credential_env_vars` to securely 
 | Tool | Use Case |
 |------|----------|
 | `workload_create` | Create new workloads with inline or existing artifacts |
-| `workload_list` | List workloads with filters (status, importance) |
+| `workload_list` | List workloads with filters (status, importance, artifact type) |
 | `workload_get` | Get detailed workload info including endpoint URL |
 | `workload_start` / `workload_stop` | Control workload lifecycle |
 | `workload_delete` | Remove workloads |
 | `workload_settings_get` / `workload_settings_update` | View/change replicas, resources, autoscaling |
+| `artifact_replacement_get` / `artifact_replacement_create` / `artifact_replacement_delete` | Manage a rolling replacement to a different artifact |
 | `workload_stats` | Get performance statistics (requests, errors, latency) |
 | `workload_history` | View artifact deployment history |
-| `artifact_update` | Update container spec (image, env vars, probes) |
+| `artifact_update` | Update container spec (image, env vars, probes); locked artifacts are cloned to a new draft |
 | `artifact_build_trigger` / `artifact_build_logs` | Trigger builds and view build logs |
+| `artifact_build_delete` | Cancel/delete a build for a draft artifact |
 | `bundle_list` | See available CPU/GPU resource bundles |
 | `credential_list` / `credential_get` | Work with DataRobot credentials |
 
@@ -622,7 +639,7 @@ Protons are the actual deployment instances of your workload. Use these tools fo
 | `artifact_search` | Search artifacts |
 | `artifact_get` | Get artifact details |
 | `artifact_create` | Create an artifact |
-| `artifact_update` | Update a draft artifact (PATCH) |
+| `artifact_update` | Update an artifact. Drafts are edited in place; a **locked** artifact is cloned into a new draft (same repository) with the edits applied — the original is left untouched and the new draft ID is returned. |
 | `artifact_lock` | Lock an artifact (make immutable) |
 | `artifact_delete` | Delete artifacts |
 | `artifact_clone` | Clone an existing artifact |
@@ -649,6 +666,16 @@ Protons are the actual deployment instances of your workload. Use these tools fo
 | Tool | Description |
 |------|-------------|
 | `bundle_list` | List compute bundles (CPU/GPU configs) |
+
+> **GPU type and GPU VRAM are chosen by selecting a resource bundle.** There is no
+> `gpuType` or `gpuMemory` setting on a workload — to run on a specific GPU model
+> (L4, A10G, H100, …) or VRAM size, call `bundle_list` and pass the matching bundle
+> ID via `resource_bundle_ids`. The `gpu` parameter on `workload_create` only sets
+> the GPU **count**.
+>
+> **Select exactly one bundle.** `resource_bundle_ids` is a list for API
+> compatibility, but only a single bundle is allowed — pass a one-element list
+> (e.g. `["gpu.l4.small"]`).
 
 ### Credentials
 
@@ -732,6 +759,20 @@ read_openapi_spec(path="/workloads")
 # Search for keywords
 read_openapi_spec(search="replica")
 ```
+
+**Local vs. master spec.** By default queries hit the spec bundled with the server.
+Pass `source="remote"` (aliases: `"master"`, `"live"`) to query the live spec at
+`{DATAROBOT_API_ENDPOINT}/openapi.yaml` instead — the source of truth for the
+deployed environment, useful when the bundled copy may be behind:
+
+```python
+# Query the live master spec for the deployed environment
+read_openapi_spec(search="replacement", source="remote")
+read_openapi_spec(schema_name="StartReplacementRequest", source="master")
+```
+
+Queries return bounded output — the full (~160KB) spec is never dumped at once;
+use a specific `schema_name`, `path`, `search`, or section list.
 
 ## Project Structure
 

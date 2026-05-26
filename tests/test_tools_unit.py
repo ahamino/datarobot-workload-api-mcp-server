@@ -519,6 +519,88 @@ class TestOpenAPITool:
         assert isinstance(result, str)
         # Should filter to specific path or indicate filtering
 
+    @pytest.mark.asyncio
+    async def test_read_openapi_spec_all_does_not_dump_full_spec(self, monkeypatch):
+        """section='all' must NOT return the whole spec into context."""
+        import pathlib
+        import wapi_mcp_server as mcp
+
+        spec_path = pathlib.Path(__file__).resolve().parent.parent / "openapi.yaml"
+        monkeypatch.setattr(mcp, "OPENAPI_SPEC_PATH", spec_path)
+        monkeypatch.setattr(mcp, "_openapi_cache", None)
+
+        result = await mcp.read_openapi_spec(section="all")
+
+        assert isinstance(result, str)
+        # Guidance message, not the spec: short and free of bulk schema dumps.
+        assert len(result) < 1000
+        assert "read_openapi_spec(" in result
+        # The real spec is ~160KB; make sure that volume never comes back.
+        assert len(result) < len(spec_path.read_text()) / 10
+
+    @pytest.mark.asyncio
+    async def test_read_openapi_spec_responses_are_bounded(self, monkeypatch):
+        """No query should exceed the response cap (full spec is ~160KB)."""
+        import pathlib
+        import wapi_mcp_server as mcp
+
+        spec_path = pathlib.Path(__file__).resolve().parent.parent / "openapi.yaml"
+        monkeypatch.setattr(mcp, "OPENAPI_SPEC_PATH", spec_path)
+        monkeypatch.setattr(mcp, "_openapi_cache", None)
+
+        for kwargs in (
+            {},                          # overview
+            {"section": "paths"},        # path list
+            {"section": "schemas"},      # schema list
+            {"search": "replica"},       # search
+            {"section": "all"},          # explicitly refused
+        ):
+            result = await mcp.read_openapi_spec(**kwargs)
+            assert isinstance(result, str)
+            assert len(result) <= mcp.MAX_OPENAPI_RESPONSE_CHARS + 500
+
+    @pytest.mark.asyncio
+    async def test_read_openapi_spec_remote_source(self, monkeypatch):
+        """source='remote' queries the live master spec, not the bundled one."""
+        import wapi_mcp_server as mcp
+
+        fake_spec = {
+            "info": {"title": "Master API", "version": "9.9.9"},
+            "paths": {"/widgets/": {"get": {"summary": "List widgets"}}},
+            "components": {"schemas": {"WidgetOnlyInMaster": {"type": "object"}}},
+        }
+        called = {"n": 0}
+
+        async def fake_remote():
+            called["n"] += 1
+            return fake_spec
+
+        monkeypatch.setattr(mcp, "_load_openapi_spec_remote", fake_remote)
+
+        # Overview reports the master source and master-only content.
+        overview = await mcp.read_openapi_spec(source="remote")
+        assert "MASTER" in overview
+        assert "Master API" in overview
+        assert called["n"] == 1
+
+        # A schema only present in master is found via the remote source.
+        schema = await mcp.read_openapi_spec(schema_name="WidgetOnlyInMaster", source="master")
+        assert "WidgetOnlyInMaster" in schema
+
+    @pytest.mark.asyncio
+    async def test_read_openapi_spec_remote_fetch_error(self, monkeypatch):
+        """A remote fetch failure returns a clean error, not an exception."""
+        import wapi_mcp_server as mcp
+
+        async def boom():
+            raise RuntimeError("HTTP 503")
+
+        monkeypatch.setattr(mcp, "_load_openapi_spec_remote", boom)
+
+        result = await mcp.read_openapi_spec(search="x", source="remote")
+        assert isinstance(result, str)
+        assert "Error fetching master OpenAPI spec" in result
+
 
 class TestArtifactSearchTool:
     """Unit tests for artifact search tool."""
@@ -901,6 +983,78 @@ class TestArtifactCoreTools:
         assert "updated" in result.lower() or "art123" in result
         mock_client.get_artifact.assert_called_once_with("art123")
         mock_client.patch_artifact.assert_called_once()
+        # Draft path patches the original artifact in place.
+        assert mock_client.patch_artifact.call_args[0][0] == "art123"
+
+    @pytest.mark.asyncio
+    async def test_artifact_update_locked_clones_to_draft(self):
+        """Editing a LOCKED artifact clones it into a new draft, untouched original."""
+        import wapi_mcp_server as mcp
+
+        mock_client = AsyncMock()
+        mock_client.get_artifact = AsyncMock(return_value={
+            "id": "art123",
+            "name": "my-artifact",
+            "status": "locked",
+            "version": 2,
+            "artifactRepositoryId": "repo-1",
+            "spec": {
+                "type": "service",
+                "containerGroups": [{
+                    "containers": [{
+                        "name": "main", "imageUri": "nginx:latest",
+                        "port": 8080, "primary": True, "environmentVars": []
+                    }]
+                }]
+            }
+        })
+        mock_client.clone_artifact = AsyncMock(return_value={
+            "id": "clone-9", "name": "my-artifact", "status": "draft",
+            "artifactRepositoryId": "repo-1",
+            "spec": {"type": "service", "containerGroups": [{"containers": [{
+                "name": "main", "imageUri": "nginx:latest", "port": 8080, "primary": True
+            }]}]},
+        })
+        mock_client.patch_artifact = AsyncMock(return_value={
+            "id": "clone-9", "name": "my-artifact", "status": "draft",
+            "artifactRepositoryId": "repo-1",
+        })
+
+        with patch('wapi_mcp_server.get_client', return_value=mock_client):
+            result = await mcp.artifact_update("art123", image_uri="nginx:alpine")
+
+        # Cloned under the same repo, using the source name.
+        mock_client.clone_artifact.assert_called_once_with("art123", "my-artifact")
+        # Edits applied to the CLONE, not the locked original.
+        assert mock_client.patch_artifact.call_args[0][0] == "clone-9"
+        assert "LOCKED" in result
+        assert "clone-9" in result
+        assert "repo-1" in result
+        assert "draft" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_artifact_update_locked_rename_only_skips_patch(self):
+        """A rename of a locked artifact is captured by the clone name alone."""
+        import wapi_mcp_server as mcp
+
+        mock_client = AsyncMock()
+        mock_client.get_artifact = AsyncMock(return_value={
+            "id": "art123", "name": "old-name", "status": "locked",
+            "artifactRepositoryId": "repo-1",
+            "spec": {"type": "service", "containerGroups": [{"containers": []}]},
+        })
+        mock_client.clone_artifact = AsyncMock(return_value={
+            "id": "clone-9", "name": "new-name", "status": "draft",
+            "artifactRepositoryId": "repo-1", "spec": {},
+        })
+
+        with patch('wapi_mcp_server.get_client', return_value=mock_client):
+            result = await mcp.artifact_update("art123", name="new-name")
+
+        mock_client.clone_artifact.assert_called_once_with("art123", "new-name")
+        # Nothing left to PATCH — the clone name already reflects the rename.
+        mock_client.patch_artifact.assert_not_called()
+        assert "clone-9" in result
 
 
 class TestOTELTraceTools:
@@ -964,5 +1118,286 @@ class TestOTELTraceTools:
         assert isinstance(result, str)
         assert "trace123" in result or "span" in result.lower()
         mock_client.get_otel_trace.assert_called_once_with("wkld123", "trace123")
+
+
+class TestWorkloadReplacementTools:
+    """Unit tests for workload replacement tools."""
+
+    @pytest.mark.asyncio
+    async def test_artifact_replacement_get(self):
+        """Test artifact_replacement_get tool."""
+        import wapi_mcp_server as mcp
+
+        mock_client = AsyncMock()
+        mock_client.get_artifact_replacement = AsyncMock(return_value={
+            "id": "repl123",
+            "workloadId": "wkld123",
+            "status": "switching",
+            "strategy": "rolling",
+            "candidateArtifactId": "art456",
+            "config": {"warmupDurationMinutes": 5, "keepOldVersionMinutes": 10},
+            "createdAt": "2024-01-15T10:00:00Z",
+        })
+
+        with patch('wapi_mcp_server.get_client', return_value=mock_client):
+            result = await mcp.artifact_replacement_get("wkld123")
+
+        assert isinstance(result, str)
+        assert "repl123" in result
+        assert "art456" in result
+        assert "switching" in result
+        mock_client.get_artifact_replacement.assert_called_once_with("wkld123")
+
+    @pytest.mark.asyncio
+    async def test_artifact_replacement_create(self):
+        """Test artifact_replacement_create tool."""
+        import wapi_mcp_server as mcp
+
+        mock_client = AsyncMock()
+        mock_client.create_artifact_replacement = AsyncMock(return_value={
+            "id": "repl123",
+            "workloadId": "wkld123",
+            "status": "submitted",
+            "strategy": "rolling",
+            "candidateArtifactId": "art456",
+            "config": {"warmupDurationMinutes": 5, "keepOldVersionMinutes": 0},
+            "createdAt": "2024-01-15T10:00:00Z",
+        })
+
+        with patch('wapi_mcp_server.get_client', return_value=mock_client):
+            result = await mcp.artifact_replacement_create(
+                "wkld123", "art456", warmup_duration_minutes=5
+            )
+
+        assert isinstance(result, str)
+        assert "repl123" in result
+        mock_client.create_artifact_replacement.assert_called_once()
+        _, payload = mock_client.create_artifact_replacement.call_args[0]
+        assert payload["artifactId"] == "art456"
+        assert payload["strategy"] == "rolling"
+        assert payload["config"]["warmupDurationMinutes"] == 5
+
+    @pytest.mark.asyncio
+    async def test_artifact_replacement_create_invalid_strategy(self):
+        """Invalid strategy is rejected without an API call."""
+        import wapi_mcp_server as mcp
+
+        mock_client = AsyncMock()
+        with patch('wapi_mcp_server.get_client', return_value=mock_client):
+            result = await mcp.artifact_replacement_create(
+                "wkld123", "art456", strategy="bluegreen"
+            )
+
+        assert "Error" in result
+        mock_client.create_artifact_replacement.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_artifact_replacement_delete(self):
+        """Test artifact_replacement_delete tool."""
+        import wapi_mcp_server as mcp
+
+        mock_client = AsyncMock()
+        mock_client.delete_artifact_replacement = AsyncMock(return_value=None)
+
+        with patch('wapi_mcp_server.get_client', return_value=mock_client):
+            result = await mcp.artifact_replacement_delete("wkld123")
+
+        assert isinstance(result, str)
+        assert "wkld123" in result
+        mock_client.delete_artifact_replacement.assert_called_once_with("wkld123")
+
+    @pytest.mark.asyncio
+    async def test_artifact_build_delete(self):
+        """Test artifact_build_delete tool."""
+        import wapi_mcp_server as mcp
+
+        mock_client = AsyncMock()
+        mock_client.delete_artifact_build = AsyncMock(return_value=None)
+
+        with patch('wapi_mcp_server.get_client', return_value=mock_client):
+            result = await mcp.artifact_build_delete("art123", "build123")
+
+        assert isinstance(result, str)
+        assert "build123" in result
+        mock_client.delete_artifact_build.assert_called_once_with("art123", "build123")
+
+    @pytest.mark.asyncio
+    async def test_workload_create_accepts_custom_nim_metric(self):
+        """Custom NIM autoscaling metric names (with ':') are accepted."""
+        import wapi_mcp_server as mcp
+
+        mock_client = AsyncMock()
+        mock_client.create_workload = AsyncMock(return_value={
+            "id": "wkld123", "name": "nim-wl", "status": "submitted",
+            "artifactId": "art123", "endpoint": "",
+        })
+        mock_client._build_url = lambda path: f"https://example.com{path}"
+
+        with patch('wapi_mcp_server.get_client', return_value=mock_client):
+            result = await mcp.workload_create(
+                name="nim-wl",
+                image_uri="nim:latest",
+                port=8080,
+                autoscaling_enabled=True,
+                autoscaling_metric="vllm:kv_cache_usage_perc",
+            )
+
+        assert "Error" not in result
+        mock_client.create_workload.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_workload_create_rejects_unknown_metric(self):
+        """A non-standard metric without ':' is still rejected."""
+        import wapi_mcp_server as mcp
+
+        mock_client = AsyncMock()
+        with patch('wapi_mcp_server.get_client', return_value=mock_client):
+            result = await mcp.workload_create(
+                name="wl",
+                image_uri="nginx:latest",
+                port=8080,
+                autoscaling_enabled=True,
+                autoscaling_metric="bogusMetric",
+            )
+
+        assert "Error" in result
+        mock_client.create_workload.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_workload_list_passes_artifact_type(self):
+        """workload_list forwards artifact_type to the client."""
+        import wapi_mcp_server as mcp
+
+        mock_client = AsyncMock()
+        mock_client.list_workloads = AsyncMock(return_value={"data": []})
+
+        with patch('wapi_mcp_server.get_client', return_value=mock_client):
+            await mcp.workload_list(artifact_type="nim")
+
+        _, kwargs = mock_client.list_workloads.call_args
+        assert kwargs["artifact_type"] == "nim"
+
+    @pytest.mark.asyncio
+    async def test_artifact_replacement_create_with_runtime(self):
+        """runtime is forwarded into the replacement payload when provided."""
+        import wapi_mcp_server as mcp
+
+        mock_client = AsyncMock()
+        mock_client.create_artifact_replacement = AsyncMock(return_value={
+            "id": "repl123", "workloadId": "wkld123", "status": "submitted",
+            "strategy": "rolling", "candidateArtifactId": "art456",
+            "config": {}, "createdAt": "2024-01-15T10:00:00Z",
+        })
+        runtime = {"containerGroups": [{"name": "default", "replicaCount": 3}]}
+
+        with patch('wapi_mcp_server.get_client', return_value=mock_client):
+            await mcp.artifact_replacement_create("wkld123", "art456", runtime=runtime)
+
+        _, payload = mock_client.create_artifact_replacement.call_args[0]
+        assert payload["runtime"] == runtime
+
+    @pytest.mark.asyncio
+    async def test_workload_create_rejects_bad_percentage_target(self):
+        """A >100 target on a percentage metric is rejected."""
+        import wapi_mcp_server as mcp
+
+        mock_client = AsyncMock()
+        with patch('wapi_mcp_server.get_client', return_value=mock_client):
+            result = await mcp.workload_create(
+                name="wl", image_uri="nginx:latest", port=8080,
+                autoscaling_enabled=True,
+                autoscaling_metric="cpuAverageUtilization",
+                autoscaling_target=150,
+            )
+
+        assert "Error" in result and "percentage" in result
+        mock_client.create_workload.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_workload_create_rejects_scale_to_zero_on_cpu(self):
+        """minCount=0 is only valid on httpRequestsConcurrency."""
+        import wapi_mcp_server as mcp
+
+        mock_client = AsyncMock()
+        with patch('wapi_mcp_server.get_client', return_value=mock_client):
+            result = await mcp.workload_create(
+                name="wl", image_uri="nginx:latest", port=8080,
+                autoscaling_enabled=True,
+                autoscaling_metric="cpuAverageUtilization",
+                autoscaling_min=0,
+            )
+
+        assert "Error" in result and "scale-to-zero" in result
+        mock_client.create_workload.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_workload_create_allows_scale_to_zero_on_http(self):
+        """minCount=0 is accepted on httpRequestsConcurrency."""
+        import wapi_mcp_server as mcp
+
+        mock_client = AsyncMock()
+        mock_client.create_workload = AsyncMock(return_value={
+            "id": "wkld123", "name": "wl", "status": "submitted",
+            "artifactId": "art123", "endpoint": "",
+        })
+        mock_client._build_url = lambda path: f"https://example.com{path}"
+
+        with patch('wapi_mcp_server.get_client', return_value=mock_client):
+            result = await mcp.workload_create(
+                name="wl", image_uri="nginx:latest", port=8080,
+                autoscaling_enabled=True,
+                autoscaling_metric="httpRequestsConcurrency",
+                autoscaling_target=10, autoscaling_min=0,
+            )
+
+        assert "Error" not in result
+        mock_client.create_workload.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_workload_create_rejects_multiple_bundles(self):
+        """Only one resource bundle may be selected."""
+        import wapi_mcp_server as mcp
+
+        mock_client = AsyncMock()
+        with patch('wapi_mcp_server.get_client', return_value=mock_client):
+            result = await mcp.workload_create(
+                name="wl", image_uri="nginx:latest", port=8080,
+                resource_bundle_ids=["gpu.l4.small", "gpu.a10g.medium"],
+            )
+
+        assert "Error" in result and "one resource bundle" in result
+        mock_client.create_workload.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_workload_settings_update_rejects_multiple_bundles(self):
+        """workload_settings_update also allows only one bundle."""
+        import wapi_mcp_server as mcp
+
+        mock_client = AsyncMock()
+        with patch('wapi_mcp_server.get_client', return_value=mock_client):
+            result = await mcp.workload_settings_update(
+                "wkld123", resource_bundle_ids=["a", "b"],
+            )
+
+        assert "Error" in result and "one resource bundle" in result
+        mock_client.update_workload_settings.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_artifact_create_omits_resources(self):
+        """artifact_create must not put resourceRequest/resourceAllocation in the spec."""
+        import wapi_mcp_server as mcp
+
+        mock_client = AsyncMock()
+        mock_client.create_artifact = AsyncMock(return_value={
+            "id": "art123", "name": "a", "status": "draft",
+        })
+
+        with patch('wapi_mcp_server.get_client', return_value=mock_client):
+            await mcp.artifact_create(name="a", image_uri="nginx:latest", port=8080)
+
+        payload = mock_client.create_artifact.call_args[0][0]
+        container = payload["spec"]["containerGroups"][0]["containers"][0]
+        assert "resourceRequest" not in container
+        assert "resourceAllocation" not in container
 
 
