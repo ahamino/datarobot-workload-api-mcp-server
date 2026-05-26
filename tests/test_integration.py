@@ -45,14 +45,26 @@ async def _discover_id(api_endpoint, api_token, kind, status=None):
 
 
 @pytest.fixture(autouse=True)
-def reset_mcp_client():
-    """Reset the global MCP client before each test to avoid event loop issues."""
+async def reset_mcp_client():
+    """Reset and properly close the global MCP client around each test.
+
+    The client owns an aiohttp session; closing it on the test's own event loop
+    (rather than dropping the reference) avoids the "Unclosed client session" /
+    "Event loop is closed" teardown noise.
+    """
     import wapi_mcp_server as mcp
-    # Reset the global client to None so each test gets a fresh one
-    mcp._client = None
+
+    async def _close():
+        if mcp._client is not None:
+            try:
+                await mcp._client.close()
+            except Exception:
+                pass
+            mcp._client = None
+
+    await _close()      # discard any client left over from a prior test
     yield
-    # Clean up after test
-    mcp._client = None
+    await _close()      # close the client this test created
 
 
 @pytest.fixture
