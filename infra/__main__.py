@@ -3,10 +3,6 @@
 import pulumi
 import pulumi_datarobot as datarobot
 
-# Only the container-side API token stays as a Pulumi secret — embedding it in
-# source would land it in git and Pulumi state in plaintext. The provider's own
-# auth (datarobot:endpoint, datarobot:apikey) still comes from stack config —
-# the pulumi-datarobot plugin reads it directly.
 datarobot_token = pulumi.Config().require_secret("datarobotToken")
 datarobot_endpoint = pulumi.Config("datarobot").require("endpoint")
 
@@ -33,7 +29,12 @@ artifact = datarobot.Artifact(
                         "primary": True,
                         "environment_vars": [
                             {"name": "DATAROBOT_API_ENDPOINT", "value": datarobot_endpoint},
-                            {"name": "DATAROBOT_API_TOKEN", "value": datarobot_token}
+                            {
+                                "name": "DATAROBOT_API_TOKEN",
+                                "source": "dr-credential",
+                                "credential_id": credential.id,
+                                "key": "apiToken",
+                            },
                         ],
                     },
                 ],

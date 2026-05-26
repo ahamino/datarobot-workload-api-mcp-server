@@ -1,2 +1,2 @@
 pulumi>=3.130.0
-pulumi-datarobot>=0.10.37
+pulumi-datarobot>=0.10.38
