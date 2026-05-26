@@ -1323,12 +1323,18 @@ Stats have been reset."""
 def _format_replacement(r: dict) -> str:
     """Render a Replacement object as a readable summary."""
     config = r.get("config") or {}
+    workload_id = r.get("workloadId", "")
+    status = r.get("status", "N/A")
+    candidate_protons = r.get("candidateProtonIds") or []
+    previous_protons = r.get("previousProtonIds") or []
     lines = [
         f"Replacement {r.get('id', 'N/A')}:",
-        f"Workload: {r.get('workloadId', 'N/A')}",
-        f"Status: {r.get('status', 'N/A')}",
+        f"Workload: {workload_id or 'N/A'}",
+        f"Status: {status}",
         f"Strategy: {r.get('strategy', 'N/A')}",
         f"Candidate artifact: {r.get('candidateArtifactId', 'N/A')}",
+        f"Candidate proton(s): {', '.join(candidate_protons) if candidate_protons else 'N/A'}",
+        f"Previous proton(s): {', '.join(previous_protons) if previous_protons else 'N/A'}",
         f"Warmup (min): {config.get('warmupDurationMinutes', 0)}",
         f"Keep old version (min): {config.get('keepOldVersionMinutes', 0)}",
         f"Created: {format_created_at(r.get('createdAt', ''))}",
@@ -1336,6 +1342,18 @@ def _format_replacement(r: dict) -> str:
     ]
     if r.get("message"):
         lines.append(f"Message: {r['message']}")
+
+    # When a replacement fails, the candidate proton is where to look. Point the
+    # agent straight at its logs/status instead of having it guess.
+    if status == "errored":
+        candidate = candidate_protons[0] if candidate_protons else "<candidate-proton-id>"
+        lines += [
+            "",
+            "Replacement FAILED. Debug the candidate proton that did not come up:",
+            f'  otel_logs(workload_id="{workload_id}", proton_id="{candidate}")  # candidate logs',
+            f'  proton_status_details(workload_id="{workload_id}", proton_id="{candidate}")  # readiness/restarts',
+            f'  proton_list(workload_id="{workload_id}")  # roles/status of all protons',
+        ]
     return "\n".join(lines)
 
 
@@ -2614,12 +2632,17 @@ async def otel_logs(
     limit: int = 50,
     level: str = "info",
     search: Optional[str] = None,
+    proton_id: Optional[str] = None,
 ) -> str:
     """Get application logs for a workload (built-in OpenTelemetry).
 
     All workloads have OTEL logging enabled by default - no configuration needed.
     Logs are automatically collected from stdout/stderr of all containers.
-    Logs are aggregated across all protons in the workload.
+
+    Logs are bound to the WORKLOAD and aggregated across all of its protons. To
+    narrow to a single proton/replica (e.g. when debugging one instance during a
+    rollout), pass proton_id — it filters on the proton_id log attribute via
+    searchKeys/searchValues. Use proton_list(workload_id) to find proton IDs.
 
     IMPORTANT: Analyze the logs for errors, exceptions, and issues.
 
@@ -2628,23 +2651,29 @@ async def otel_logs(
         limit: Maximum number of log entries (default: 50)
         level: Minimum log level: debug, info, warning, error, critical (default: info)
         search: Optional text to search for in log messages
+        proton_id: Optional proton ID to filter logs to a single proton/replica
     """
     client = await get_client()
 
     includes = [search] if search else None
+    search_keys = ["proton_id"] if proton_id else None
+    search_values = [proton_id] if proton_id else None
     result = await client.get_otel_logs(
         workload_id,
         limit=limit,
         level=level,
         includes=includes,
+        search_keys=search_keys,
+        search_values=search_values,
     )
 
     logs = result.get("data", [])
 
+    scope = f"workload {workload_id}" + (f", proton {proton_id}" if proton_id else "")
     if not logs:
-        return f"No logs found for workload {workload_id}.\nMake sure the workload is running. Logs appear shortly after startup."
+        return f"No logs found for {scope}.\nMake sure the workload is running. Logs appear shortly after startup."
 
-    output = f"=== OTEL LOGS FOR WORKLOAD {workload_id} ===\n"
+    output = f"=== OTEL LOGS FOR {scope.upper()} ===\n"
     output += f"Showing {len(logs)} log entries (level >= {level})\n\n"
 
     level_counts: dict[str, int] = {}
