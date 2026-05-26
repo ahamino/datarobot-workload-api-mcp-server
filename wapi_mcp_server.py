@@ -1820,21 +1820,26 @@ async def artifact_update(
     liveness_probe_path: Optional[str] = None,
     entrypoint: Optional[list[str]] = None,
 ) -> str:
-    """Update an existing draft artifact (PATCH).
+    """Update an artifact's spec/metadata. Provide only the fields to change.
 
-    Only artifacts with status='draft' can be updated.
-    Provide only the fields you want to change.
+    DRAFT artifacts are edited in place.
+
+    LOCKED artifacts are immutable, so they cannot be edited directly. When the
+    target is locked, this tool instead CLONES it into a new DRAFT under the same
+    artifact repository and applies the edits to that clone — the original locked
+    artifact is left untouched. The new draft's ID is returned; nothing is deployed.
 
     Note: resources (CPU/memory/GPU, replicas, autoscaling) live on the
     workload's runtime, not the artifact. To change them, use
     workload_settings_update — not this tool.
 
-    IMPORTANT: After updating, restart any workloads using this artifact
-    to pick up the changes (workload_stop then workload_start).
+    To roll the updated artifact out to a running workload, use
+    artifact_replacement_create (rollouts require draft<->draft / locked<->locked,
+    so a workload on a locked artifact needs the new draft locked first).
 
     Args:
         artifact_id: The artifact ID to update
-        name: New artifact name
+        name: New artifact name (also used as the clone name when the source is locked)
         description: New artifact description
         image_uri: New container image URI
         port: New container port (must be >= 1024)
@@ -1852,12 +1857,36 @@ async def artifact_update(
 
     client = await get_client()
 
+    # Fetch the artifact first: we need its status (draft vs locked), name, repo,
+    # and spec (as the merge base for container edits).
+    current = await client.get_artifact(artifact_id)
+    is_locked = current.get("status") == "locked"
+    repo_id = current.get("artifactRepositoryId")
+    source_name = current.get("name", "")
+
+    # Locked artifacts are immutable. Clone into the same repository and apply the
+    # edits to the resulting DRAFT; the original locked artifact is left untouched.
+    target_id = artifact_id
+    if is_locked:
+        clone_name = name if name is not None else source_name
+        clone = await client.clone_artifact(artifact_id, clone_name)
+        target_id = clone.get("id", "")
+        # The clone copies the source's fields (including repository) as a new
+        # draft; use it as the merge base and don't re-apply the name below.
+        current = clone
+        name = None
+
     payload: dict = {}
 
     if name is not None:
         payload["name"] = name
     if description is not None:
         payload["description"] = description
+
+    # Keep the new draft under the same repository as the locked source if the
+    # clone didn't already inherit it.
+    if is_locked and repo_id and not current.get("artifactRepositoryId"):
+        payload["artifactRepositoryId"] = repo_id
 
     # Build container updates if any container fields provided
     container_fields = {
@@ -1867,8 +1896,6 @@ async def artifact_update(
     }
 
     if any(v is not None for v in container_fields.values()):
-        # Need to fetch current spec and update it
-        current = await client.get_artifact(artifact_id)
         current_spec = current.get("spec", {})
         container_groups = current_spec.get("containerGroups", [{}])
         containers = container_groups[0].get("containers", [{}]) if container_groups else [{}]
@@ -1906,17 +1933,36 @@ async def artifact_update(
             }]
         }
 
-    if not payload:
+    # For a locked source the clone alone may already capture the change (e.g. a
+    # rename), so an empty payload there is fine — for a draft it is an error.
+    if not payload and not is_locked:
         return "Error: No fields provided to update."
 
-    artifact = await client.patch_artifact(artifact_id, payload)
+    artifact = await client.patch_artifact(target_id, payload) if payload else current
+
+    if is_locked:
+        new_repo = artifact.get("artifactRepositoryId") or repo_id or "N/A"
+        return f"""Source artifact {artifact_id} is LOCKED (immutable) — created a new DRAFT clone instead.
+
+New draft artifact: {target_id}
+Name: {artifact.get("name", "N/A")}
+Status: {artifact.get("status", "draft")}
+Artifact repository: {new_repo} (same as source)
+
+Your edits were applied to the new draft; the original locked artifact is unchanged.
+
+To deploy it to a workload (rollouts require draft<->draft / locked<->locked):
+  - Workload running a LOCKED artifact: lock the new draft first, then roll out:
+      artifact_lock(artifact_id="{target_id}", repository_id="{new_repo}")
+      artifact_replacement_create(workload_id="<id>", artifact_id="{target_id}")
+  - Workload running a DRAFT artifact: roll it out directly:
+      artifact_replacement_create(workload_id="<id>", artifact_id="{target_id}")"""
 
     return f"""Updated artifact {artifact_id}:
 Status: {artifact.get("status", "unknown")}
 
-Changes applied. If workloads use this artifact, restart them to pick up changes:
-  1. workload_stop(workload_ids=[...])
-  2. workload_start(workload_id=..., wait_for_running=True)
+Changes applied. To roll the update out to a running workload (zero downtime):
+  artifact_replacement_create(workload_id="<id>", artifact_id="{artifact_id}")
 
 Full response:
 {json.dumps(artifact, indent=2)}"""

@@ -429,7 +429,7 @@ name/description/importance uses `workload_update`.
 | `artifact_replacement_get` / `artifact_replacement_create` / `artifact_replacement_delete` | Manage a rolling replacement to a different artifact |
 | `workload_stats` | Get performance statistics (requests, errors, latency) |
 | `workload_history` | View artifact deployment history |
-| `artifact_update` | Update container spec (image, env vars, probes) |
+| `artifact_update` | Update container spec (image, env vars, probes); locked artifacts are cloned to a new draft |
 | `artifact_build_trigger` / `artifact_build_logs` | Trigger builds and view build logs |
 | `artifact_build_delete` | Cancel/delete a build for a draft artifact |
 | `bundle_list` | See available CPU/GPU resource bundles |
@@ -639,7 +639,7 @@ Protons are the actual deployment instances of your workload. Use these tools fo
 | `artifact_search` | Search artifacts |
 | `artifact_get` | Get artifact details |
 | `artifact_create` | Create an artifact |
-| `artifact_update` | Update a draft artifact (PATCH) |
+| `artifact_update` | Update an artifact. Drafts are edited in place; a **locked** artifact is cloned into a new draft (same repository) with the edits applied — the original is left untouched and the new draft ID is returned. |
 | `artifact_lock` | Lock an artifact (make immutable) |
 | `artifact_delete` | Delete artifacts |
 | `artifact_clone` | Clone an existing artifact |

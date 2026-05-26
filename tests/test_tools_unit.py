@@ -983,6 +983,78 @@ class TestArtifactCoreTools:
         assert "updated" in result.lower() or "art123" in result
         mock_client.get_artifact.assert_called_once_with("art123")
         mock_client.patch_artifact.assert_called_once()
+        # Draft path patches the original artifact in place.
+        assert mock_client.patch_artifact.call_args[0][0] == "art123"
+
+    @pytest.mark.asyncio
+    async def test_artifact_update_locked_clones_to_draft(self):
+        """Editing a LOCKED artifact clones it into a new draft, untouched original."""
+        import wapi_mcp_server as mcp
+
+        mock_client = AsyncMock()
+        mock_client.get_artifact = AsyncMock(return_value={
+            "id": "art123",
+            "name": "my-artifact",
+            "status": "locked",
+            "version": 2,
+            "artifactRepositoryId": "repo-1",
+            "spec": {
+                "type": "service",
+                "containerGroups": [{
+                    "containers": [{
+                        "name": "main", "imageUri": "nginx:latest",
+                        "port": 8080, "primary": True, "environmentVars": []
+                    }]
+                }]
+            }
+        })
+        mock_client.clone_artifact = AsyncMock(return_value={
+            "id": "clone-9", "name": "my-artifact", "status": "draft",
+            "artifactRepositoryId": "repo-1",
+            "spec": {"type": "service", "containerGroups": [{"containers": [{
+                "name": "main", "imageUri": "nginx:latest", "port": 8080, "primary": True
+            }]}]},
+        })
+        mock_client.patch_artifact = AsyncMock(return_value={
+            "id": "clone-9", "name": "my-artifact", "status": "draft",
+            "artifactRepositoryId": "repo-1",
+        })
+
+        with patch('wapi_mcp_server.get_client', return_value=mock_client):
+            result = await mcp.artifact_update("art123", image_uri="nginx:alpine")
+
+        # Cloned under the same repo, using the source name.
+        mock_client.clone_artifact.assert_called_once_with("art123", "my-artifact")
+        # Edits applied to the CLONE, not the locked original.
+        assert mock_client.patch_artifact.call_args[0][0] == "clone-9"
+        assert "LOCKED" in result
+        assert "clone-9" in result
+        assert "repo-1" in result
+        assert "draft" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_artifact_update_locked_rename_only_skips_patch(self):
+        """A rename of a locked artifact is captured by the clone name alone."""
+        import wapi_mcp_server as mcp
+
+        mock_client = AsyncMock()
+        mock_client.get_artifact = AsyncMock(return_value={
+            "id": "art123", "name": "old-name", "status": "locked",
+            "artifactRepositoryId": "repo-1",
+            "spec": {"type": "service", "containerGroups": [{"containers": []}]},
+        })
+        mock_client.clone_artifact = AsyncMock(return_value={
+            "id": "clone-9", "name": "new-name", "status": "draft",
+            "artifactRepositoryId": "repo-1", "spec": {},
+        })
+
+        with patch('wapi_mcp_server.get_client', return_value=mock_client):
+            result = await mcp.artifact_update("art123", name="new-name")
+
+        mock_client.clone_artifact.assert_called_once_with("art123", "new-name")
+        # Nothing left to PATCH — the clone name already reflects the rename.
+        mock_client.patch_artifact.assert_not_called()
+        assert "clone-9" in result
 
 
 class TestOTELTraceTools:
