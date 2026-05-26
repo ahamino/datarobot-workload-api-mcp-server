@@ -519,6 +519,88 @@ class TestOpenAPITool:
         assert isinstance(result, str)
         # Should filter to specific path or indicate filtering
 
+    @pytest.mark.asyncio
+    async def test_read_openapi_spec_all_does_not_dump_full_spec(self, monkeypatch):
+        """section='all' must NOT return the whole spec into context."""
+        import pathlib
+        import wapi_mcp_server as mcp
+
+        spec_path = pathlib.Path(__file__).resolve().parent.parent / "openapi.yaml"
+        monkeypatch.setattr(mcp, "OPENAPI_SPEC_PATH", spec_path)
+        monkeypatch.setattr(mcp, "_openapi_cache", None)
+
+        result = await mcp.read_openapi_spec(section="all")
+
+        assert isinstance(result, str)
+        # Guidance message, not the spec: short and free of bulk schema dumps.
+        assert len(result) < 1000
+        assert "read_openapi_spec(" in result
+        # The real spec is ~160KB; make sure that volume never comes back.
+        assert len(result) < len(spec_path.read_text()) / 10
+
+    @pytest.mark.asyncio
+    async def test_read_openapi_spec_responses_are_bounded(self, monkeypatch):
+        """No query should exceed the response cap (full spec is ~160KB)."""
+        import pathlib
+        import wapi_mcp_server as mcp
+
+        spec_path = pathlib.Path(__file__).resolve().parent.parent / "openapi.yaml"
+        monkeypatch.setattr(mcp, "OPENAPI_SPEC_PATH", spec_path)
+        monkeypatch.setattr(mcp, "_openapi_cache", None)
+
+        for kwargs in (
+            {},                          # overview
+            {"section": "paths"},        # path list
+            {"section": "schemas"},      # schema list
+            {"search": "replica"},       # search
+            {"section": "all"},          # explicitly refused
+        ):
+            result = await mcp.read_openapi_spec(**kwargs)
+            assert isinstance(result, str)
+            assert len(result) <= mcp.MAX_OPENAPI_RESPONSE_CHARS + 500
+
+    @pytest.mark.asyncio
+    async def test_read_openapi_spec_remote_source(self, monkeypatch):
+        """source='remote' queries the live master spec, not the bundled one."""
+        import wapi_mcp_server as mcp
+
+        fake_spec = {
+            "info": {"title": "Master API", "version": "9.9.9"},
+            "paths": {"/widgets/": {"get": {"summary": "List widgets"}}},
+            "components": {"schemas": {"WidgetOnlyInMaster": {"type": "object"}}},
+        }
+        called = {"n": 0}
+
+        async def fake_remote():
+            called["n"] += 1
+            return fake_spec
+
+        monkeypatch.setattr(mcp, "_load_openapi_spec_remote", fake_remote)
+
+        # Overview reports the master source and master-only content.
+        overview = await mcp.read_openapi_spec(source="remote")
+        assert "MASTER" in overview
+        assert "Master API" in overview
+        assert called["n"] == 1
+
+        # A schema only present in master is found via the remote source.
+        schema = await mcp.read_openapi_spec(schema_name="WidgetOnlyInMaster", source="master")
+        assert "WidgetOnlyInMaster" in schema
+
+    @pytest.mark.asyncio
+    async def test_read_openapi_spec_remote_fetch_error(self, monkeypatch):
+        """A remote fetch failure returns a clean error, not an exception."""
+        import wapi_mcp_server as mcp
+
+        async def boom():
+            raise RuntimeError("HTTP 503")
+
+        monkeypatch.setattr(mcp, "_load_openapi_spec_remote", boom)
+
+        result = await mcp.read_openapi_spec(search="x", source="remote")
+        assert isinstance(result, str)
+        assert "Error fetching master OpenAPI spec" in result
+
 
 class TestArtifactSearchTool:
     """Unit tests for artifact search tool."""

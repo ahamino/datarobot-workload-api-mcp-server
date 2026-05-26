@@ -760,6 +760,20 @@ read_openapi_spec(path="/workloads")
 read_openapi_spec(search="replica")
 ```
 
+**Local vs. master spec.** By default queries hit the spec bundled with the server.
+Pass `source="remote"` (aliases: `"master"`, `"live"`) to query the live spec at
+`{DATAROBOT_API_ENDPOINT}/openapi.yaml` instead — the source of truth for the
+deployed environment, useful when the bundled copy may be behind:
+
+```python
+# Query the live master spec for the deployed environment
+read_openapi_spec(search="replacement", source="remote")
+read_openapi_spec(schema_name="StartReplacementRequest", source="master")
+```
+
+Queries return bounded output — the full (~160KB) spec is never dumped at once;
+use a specific `schema_name`, `path`, `search`, or section list.
+
 ## Project Structure
 
 ```
