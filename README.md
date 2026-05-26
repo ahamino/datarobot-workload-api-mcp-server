@@ -722,7 +722,7 @@ credential_env_vars=[
 
 | Tool | Description |
 |------|-------------|
-| `otel_logs` | Get application logs (auto-collected from stdout/stderr) |
+| `otel_logs` | Get application logs (auto-collected from stdout/stderr); filter to one replica with `proton_id` |
 | `otel_traces` | List request traces (requires app instrumentation) |
 | `otel_trace_get` | Get detailed trace with spans |
 | `otel_metrics` | Get resource metrics (requires app instrumentation) |
@@ -730,7 +730,10 @@ credential_env_vars=[
 **Note:**
 - **Logs** are automatically collected from all containers - no configuration needed
 - **Traces** and **Metrics** require your application to be instrumented with OpenTelemetry
-- All OTEL data is aggregated at the workload level across all protons
+- All OTEL data is aggregated at the workload level across all protons. Logs can
+  be narrowed to a single proton/replica with `otel_logs(workload_id, proton_id=...)`,
+  which filters on the `proton_id` log attribute (`searchKeys`/`searchValues`). Find
+  proton IDs with `proton_list(workload_id)`.
 
 ### OpenAPI Spec
 

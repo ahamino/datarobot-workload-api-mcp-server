@@ -665,8 +665,15 @@ class WapiClient:
         level: Optional[str] = None,
         includes: Optional[List[str]] = None,
         excludes: Optional[List[str]] = None,
+        search_keys: Optional[List[str]] = None,
+        search_values: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
-        """Get OpenTelemetry logs for a workload."""
+        """Get OpenTelemetry logs for a workload.
+
+        Logs are bound to the workload; attributes such as proton_id are filtered
+        via searchKeys/searchValues (positional pairs), e.g.
+        searchKeys=["proton_id"], search_values=["<proton-id>"].
+        """
         params: Dict[str, Any] = {"limit": limit, "offset": offset}
         if level:
             params["level"] = level
@@ -674,6 +681,10 @@ class WapiClient:
             params["includes"] = includes
         if excludes:
             params["excludes"] = excludes
+        if search_keys:
+            params["searchKeys"] = search_keys
+        if search_values:
+            params["searchValues"] = search_values
         return await self.request(
             "GET", f"/api/v2/otel/workload/{workload_id}/logs/", params=params
         )

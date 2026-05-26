@@ -1057,6 +1057,90 @@ class TestArtifactCoreTools:
         assert "clone-9" in result
 
 
+class TestReplacementFailureGuidance:
+    """A failed replacement should point at the candidate proton's logs."""
+
+    @pytest.mark.asyncio
+    async def test_errored_replacement_surfaces_proton_and_log_hint(self):
+        import wapi_mcp_server as mcp
+
+        mock_client = AsyncMock()
+        mock_client.get_artifact_replacement = AsyncMock(return_value={
+            "id": "repl1", "workloadId": "wkld9", "status": "errored",
+            "strategy": "rolling", "candidateArtifactId": "art2",
+            "candidateProtonIds": ["proton-cand-1"],
+            "previousProtonIds": ["proton-old-1"],
+            "config": {}, "message": "candidate failed readiness",
+        })
+
+        with patch('wapi_mcp_server.get_client', return_value=mock_client):
+            result = await mcp.artifact_replacement_get("wkld9")
+
+        # Candidate proton id is surfaced and the agent is told to read its logs.
+        assert "proton-cand-1" in result
+        assert 'otel_logs(workload_id="wkld9", proton_id="proton-cand-1")' in result
+        assert "proton_status_details" in result
+
+    @pytest.mark.asyncio
+    async def test_non_errored_replacement_has_no_failure_hint(self):
+        import wapi_mcp_server as mcp
+
+        mock_client = AsyncMock()
+        mock_client.get_artifact_replacement = AsyncMock(return_value={
+            "id": "repl1", "workloadId": "wkld9", "status": "switching",
+            "strategy": "rolling", "candidateArtifactId": "art2",
+            "candidateProtonIds": ["proton-cand-1"], "config": {},
+        })
+
+        with patch('wapi_mcp_server.get_client', return_value=mock_client):
+            result = await mcp.artifact_replacement_get("wkld9")
+
+        assert "Replacement FAILED" not in result
+        # Candidate proton is still listed for visibility.
+        assert "proton-cand-1" in result
+
+
+class TestOTELLogsTool:
+    """Unit tests for the otel_logs tool, including proton_id filtering."""
+
+    @pytest.mark.asyncio
+    async def test_otel_logs_no_proton_filter(self):
+        """Without proton_id, no searchKeys/searchValues are sent."""
+        import wapi_mcp_server as mcp
+
+        mock_client = AsyncMock()
+        mock_client.get_otel_logs = AsyncMock(return_value={"data": [
+            {"level": "info", "message": "hello", "timestamp": "2024-01-15T10:00:00Z"}
+        ]})
+
+        with patch('wapi_mcp_server.get_client', return_value=mock_client):
+            result = await mcp.otel_logs("wkld123")
+
+        assert isinstance(result, str)
+        _, kwargs = mock_client.get_otel_logs.call_args
+        assert kwargs["search_keys"] is None
+        assert kwargs["search_values"] is None
+
+    @pytest.mark.asyncio
+    async def test_otel_logs_filters_by_proton_id(self):
+        """proton_id maps to searchKeys=proton_id / searchValues=<id>."""
+        import wapi_mcp_server as mcp
+
+        mock_client = AsyncMock()
+        mock_client.get_otel_logs = AsyncMock(return_value={"data": [
+            {"level": "error", "message": "boom", "timestamp": "2024-01-15T10:00:00Z"}
+        ]})
+
+        with patch('wapi_mcp_server.get_client', return_value=mock_client):
+            result = await mcp.otel_logs("wkld123", proton_id="proton-9")
+
+        _, kwargs = mock_client.get_otel_logs.call_args
+        assert kwargs["search_keys"] == ["proton_id"]
+        assert kwargs["search_values"] == ["proton-9"]
+        # Scope is reflected in the output header.
+        assert "proton-9" in result.lower()
+
+
 class TestOTELTraceTools:
     """Unit tests for OTEL trace tools."""
 
