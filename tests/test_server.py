@@ -11,6 +11,15 @@ class TestServerImport:
         import wapi_mcp_server
         assert wapi_mcp_server is not None
 
+    def test_stateless_http_app_builds(self):
+        """The HTTP app is built in stateless mode (resilient to replacement/scale)."""
+        import wapi_mcp_server as mcp
+        # stateless_http=True must be accepted and produce a callable ASGI app,
+        # wrapped by the session-header middleware — mirrors what main() does.
+        app = mcp.mcp.http_app(path="/mcp", stateless_http=True)
+        wrapped = mcp.create_session_header_middleware(app)
+        assert callable(wrapped)
+
     def test_mcp_instance_exists(self):
         """Test that the MCP instance exists."""
         import wapi_mcp_server

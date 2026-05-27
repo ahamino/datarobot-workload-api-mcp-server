@@ -3212,9 +3212,14 @@ def main():
     if args.mode == "http":
         import uvicorn
         LOG.info(f"Starting WAPI MCP server in HTTP mode on {args.host}:{args.port}")
-        app = mcp.http_app(path="/mcp")
+        # Stateless HTTP: no per-session state is held in the server process, so a
+        # client's calls keep working across workload replacements/restarts and
+        # scale-out (multiple replicas) without sticky sessions. A stateful server
+        # pins each mcp-session-id to one process, so a rolling replacement of this
+        # workload would orphan live sessions ("Session not found").
+        app = mcp.http_app(path="/mcp", stateless_http=True)
         app = create_session_header_middleware(app)
-        LOG.info("Session header translation enabled")
+        LOG.info("Session header translation enabled (stateless HTTP)")
         uvicorn.run(app, host=args.host, port=args.port)
     else:
         LOG.info("Starting WAPI MCP server in stdio mode")
