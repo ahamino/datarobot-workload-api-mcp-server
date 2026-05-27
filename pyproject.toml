@@ -23,8 +23,11 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
 ]
 dependencies = [
-    "fastmcp>=2.0.0",
+    "fastmcp>=3.3,<4",
     "aiohttp>=3.9.0",
+    "pyyaml>=6.0",
+    "uvicorn>=0.30",
+    "starlette>=0.37",
 ]
 
 [project.optional-dependencies]

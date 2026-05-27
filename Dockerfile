@@ -25,6 +25,10 @@ USER appuser
 # Expose port for HTTP transport
 EXPOSE 8000
 
+# Liveness check for HTTP mode (the default CMD). Uses stdlib so no extra deps.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD ["python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/healthz', timeout=4).status==200 else 1)"]
+
 # Default entrypoint - can be overridden in workload config
 ENTRYPOINT ["python", "wapi_mcp_server.py"]
 CMD ["--mode", "http", "--host", "0.0.0.0", "--port", "8000"]

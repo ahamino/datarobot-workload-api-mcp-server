@@ -29,34 +29,35 @@ class WapiClient:
         self.timeout = aiohttp.ClientTimeout(total=timeout)
         self._session: Optional[aiohttp.ClientSession] = None
 
-    async def __aenter__(self) -> "WapiClient":
-        """Enter async context - create session."""
-        self._session = aiohttp.ClientSession(
+    def _new_session(self) -> aiohttp.ClientSession:
+        """Build an aiohttp session with auth + content-type headers."""
+        return aiohttp.ClientSession(
             timeout=self.timeout,
             headers={
                 "Authorization": f"Bearer {self.token}",
                 "Content-Type": "application/json",
             },
         )
+
+    async def __aenter__(self) -> "WapiClient":
+        """Enter async context - create session."""
+        self._session = self._new_session()
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
         """Exit async context - close session."""
-        if self._session:
-            await self._session.close()
-            self._session = None
+        await self.close()
 
     @property
     def session(self) -> aiohttp.ClientSession:
-        """Get the active session, creating one if needed."""
+        """Active session, created lazily on first use.
+
+        Must be created with a running event loop, hence the lazy init. The MCP
+        server keeps one client (and session) for the process lifetime; short-lived
+        callers should use `async with WapiClient(...)` so the session is closed.
+        """
         if self._session is None:
-            self._session = aiohttp.ClientSession(
-                timeout=self.timeout,
-                headers={
-                    "Authorization": f"Bearer {self.token}",
-                    "Content-Type": "application/json",
-                },
-            )
+            self._session = self._new_session()
         return self._session
 
     def _build_url(self, path: str) -> str:
