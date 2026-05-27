@@ -9,8 +9,7 @@ from typing import Optional
 
 import wapi_mcp_server as server
 
-mcp = server.mcp
-traced_tool = server.traced_tool
+from wapi_mcp_server import mcp, traced_tool  # noqa: E402
 
 
 @mcp.tool()
