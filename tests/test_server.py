@@ -14,11 +14,10 @@ class TestServerImport:
     def test_stateless_http_app_builds(self):
         """The HTTP app is built in stateless mode (resilient to replacement/scale)."""
         import wapi_mcp_server as mcp
-        # stateless_http=True must be accepted and produce a callable ASGI app,
-        # wrapped by the session-header middleware — mirrors what main() does.
+        # stateless_http=True must be accepted and produce a callable ASGI app —
+        # mirrors what main() does. No session-header middleware in stateless mode.
         app = mcp.mcp.http_app(path="/mcp", stateless_http=True)
-        wrapped = mcp.create_session_header_middleware(app)
-        assert callable(wrapped)
+        assert callable(app)
 
     def test_mcp_instance_exists(self):
         """Test that the MCP instance exists."""
@@ -253,9 +252,10 @@ class TestGenAITracing:
             """A tool that fails."""
             raise ValueError("nope")
 
-        # traced_tool swallows the exception and returns an error string.
-        result = await boom_tool()
-        assert "ERROR" in result
+        # Unexpected (non-API) errors re-raise so the failure surfaces, but the
+        # span is still recorded with error.type before it propagates.
+        with pytest.raises(ValueError):
+            await boom_tool()
 
         span = next(s for s in exporter.get_finished_spans() if s.name == "execute_tool boom_tool")
         attrs = dict(span.attributes)

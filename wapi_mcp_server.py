@@ -44,76 +44,6 @@ from wapi_mcp.telemetry import (
 )
 
 
-# ---------------------------------------------------------------------------
-# Session Header Translation (Pure ASGI Middleware)
-# ---------------------------------------------------------------------------
-# The DataRobot gateway strips non-standard headers like `mcp-session-id`.
-# Headers prefixed with `x-datarobot-` are preserved.
-# This middleware translates between the two without breaking SSE streaming.
-
-def create_session_header_middleware(app):
-    """Wrap ASGI app with session header translation."""
-    import logging
-    mw_log = logging.getLogger("session-middleware")
-
-    async def middleware(scope, receive, send):
-        if scope["type"] != "http":
-            await app(scope, receive, send)
-            return
-
-        # Log all incoming headers for debugging
-        headers = list(scope.get("headers", []))
-        path = scope.get("path", "")
-
-        if "/mcp" in path:
-            header_names = [name.decode() for name, _ in headers]
-            mw_log.info(f"[MW] Request to {path} - headers: {header_names}")
-
-        # Look for session ID headers
-        dr_session_id = None
-        mcp_session_id = None
-
-        for name, value in headers:
-            name_lower = name.lower()
-            if name_lower == b"x-datarobot-mcp-session-id":
-                dr_session_id = value
-                mw_log.info(f"[MW] Found x-datarobot-mcp-session-id: {value.decode()[:16]}...")
-            elif name_lower == b"mcp-session-id":
-                mcp_session_id = value
-                mw_log.info(f"[MW] Found mcp-session-id: {value.decode()[:16]}...")
-
-        # Add mcp-session-id header if we found the DataRobot one (and mcp-session-id not already present)
-        if dr_session_id and not mcp_session_id:
-            headers.append((b"mcp-session-id", dr_session_id))
-            scope = dict(scope)
-            scope["headers"] = headers
-            mw_log.info("[MW] Translated x-datarobot-mcp-session-id -> mcp-session-id")
-
-        # Wrap send to add x-datarobot-mcp-session-id to response
-        async def send_wrapper(message):
-            if message["type"] == "http.response.start":
-                response_headers = list(message.get("headers", []))
-
-                # Find mcp-session-id in response
-                mcp_session_id = None
-                for name, value in response_headers:
-                    if name.lower() == b"mcp-session-id":
-                        mcp_session_id = value
-                        break
-
-                # Add x-datarobot-mcp-session-id if found
-                if mcp_session_id:
-                    response_headers.append((b"x-datarobot-mcp-session-id", mcp_session_id))
-                    message = dict(message)
-                    message["headers"] = response_headers
-
-            await send(message)
-
-        await app(scope, receive, send_wrapper)
-
-    return middleware
-
-
 def parse_json_param(value, param_name: str):
     """Parse a parameter that may have been stringified by MCP client.
 
@@ -247,12 +177,16 @@ def traced_tool(func):
                         span.set_attribute("tool.output", f"ERROR: {str(e)[:500]}")
                 LOG.error(f"Tool {tool_name} failed after {duration_ms:.1f}ms: {e}")
 
-                # Return formatted error message instead of raising
-                from wapi_mcp.exceptions import WapiAPIError
+                # Expected, user-actionable failures (API/config errors) are returned
+                # as a clean message the agent can act on. Anything else is an
+                # unexpected bug — re-raise so it surfaces as a tool error (isError)
+                # and in logs/tests, rather than masquerading as a normal result.
+                from wapi_mcp.exceptions import WapiAPIError, WapiConfigError
                 if isinstance(e, WapiAPIError):
                     return f"API ERROR in {tool_name}:\n\n{str(e)}"
-                else:
-                    return f"ERROR in {tool_name}: {error_type}: {str(e)}"
+                if isinstance(e, WapiConfigError):
+                    return f"CONFIG ERROR in {tool_name}: {e}"
+                raise
 
     return wrapper
 
@@ -3214,10 +3148,9 @@ def main():
         # client's calls keep working across workload replacements/restarts and
         # scale-out (multiple replicas) without sticky sessions. A stateful server
         # pins each mcp-session-id to one process, so a rolling replacement of this
-        # workload would orphan live sessions ("Session not found").
+        # workload would orphan live sessions ("Session not found"). Because there
+        # are no sessions, no mcp-session-id header translation is needed.
         app = mcp.http_app(path="/mcp", stateless_http=True)
-        app = create_session_header_middleware(app)
-        LOG.info("Session header translation enabled (stateless HTTP)")
         uvicorn.run(app, host=args.host, port=args.port)
     else:
         LOG.info("Starting WAPI MCP server in stdio mode")

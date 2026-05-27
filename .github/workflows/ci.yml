@@ -85,7 +85,7 @@ jobs:
 
       - name: Run type checking
         run: |
-          mypy wapi_mcp/ --ignore-missing-imports
+          mypy wapi_mcp/ wapi_mcp_server.py --ignore-missing-imports
 
   build-and-push:
     name: Build & Push Image

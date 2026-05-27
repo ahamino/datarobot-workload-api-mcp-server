@@ -681,9 +681,12 @@ class TestReadOnlyToolsIntegration:
         )
 
 
+@destructive
 class TestArtifactLifecycleIntegration:
-    """Self-contained artifact CRUD. Draft artifacts are metadata (no compute),
-    so this runs by default and cleans up everything it creates."""
+    """Self-contained artifact CRUD (create/update/clone/delete). Draft artifacts
+    are metadata (no compute) and the test cleans up after itself, but it still
+    mutates the live environment — gate it behind WAPI_INTEGRATION_DESTRUCTIVE so
+    CI/default runs stay read-only and don't create artifacts on every merge."""
 
     @pytest.mark.asyncio
     async def test_create_get_update_clone_delete(self, api_endpoint, api_token):

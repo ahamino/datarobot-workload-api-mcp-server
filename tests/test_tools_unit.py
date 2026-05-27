@@ -1496,3 +1496,79 @@ class TestWorkloadReplacementTools:
         assert "resourceAllocation" not in container
 
 
+
+
+class TestWriteSchemaConformance:
+    """Mutating tools must only send keys the WRITE schema permits.
+
+    The write request models are additionalProperties: false, and differ from the
+    read models (e.g. the update spec is MultiContainerArtifactSpec — containerGroups
+    only, no `type`). These tests guard against echoing read-model fields back on a
+    write, which 422s. They are derived from the bundled openapi.yaml so they track
+    the spec.
+    """
+
+    @staticmethod
+    def _props(schema_name):
+        import pathlib
+        import yaml
+        spec_path = pathlib.Path(__file__).resolve().parent.parent / "openapi.yaml"
+        spec = yaml.safe_load(spec_path.read_text())
+        return set(spec["components"]["schemas"][schema_name]["properties"].keys())
+
+    @pytest.mark.asyncio
+    async def test_artifact_update_body_conforms(self):
+        import wapi_mcp_server as mcp
+
+        mock = AsyncMock()
+        mock.get_artifact = AsyncMock(return_value={
+            "id": "a1", "status": "draft", "name": "x",
+            "spec": {"type": "service", "containerGroups": [
+                {"name": "default", "containers": [
+                    {"name": "main", "imageUri": "nginx", "port": 8080, "primary": True}
+                ]}
+            ]},
+        })
+        mock.patch_artifact = AsyncMock(return_value={"id": "a1", "status": "draft"})
+        with patch("wapi_mcp_server.get_client", return_value=mock):
+            await mcp.artifact_update("a1", image_uri="nginx:alpine", description="d")
+
+        _, body = mock.patch_artifact.call_args[0]
+        assert set(body) <= self._props("UpdateArtifactRequest")
+        assert set(body["spec"]) <= self._props("MultiContainerArtifactSpec")
+
+    @pytest.mark.asyncio
+    async def test_artifact_lock_body_conforms(self):
+        import wapi_mcp_server as mcp
+
+        mock = AsyncMock()
+        mock.patch_artifact = AsyncMock(return_value={"id": "a1", "status": "locked"})
+        with patch("wapi_mcp_server.get_client", return_value=mock):
+            await mcp.artifact_lock("a1")
+
+        _, body = mock.patch_artifact.call_args[0]
+        assert set(body) <= self._props("UpdateArtifactRequest")
+
+    @pytest.mark.asyncio
+    async def test_workload_update_body_conforms(self):
+        import wapi_mcp_server as mcp
+
+        mock = AsyncMock()
+        mock.patch_workload = AsyncMock(return_value={"id": "w1", "status": "running"})
+        with patch("wapi_mcp_server.get_client", return_value=mock):
+            await mcp.workload_update("w1", name="n", description="d", importance="high")
+
+        _, body = mock.patch_workload.call_args[0]
+        assert set(body) <= self._props("UpdateWorkloadRequest")
+
+    @pytest.mark.asyncio
+    async def test_workload_settings_update_body_conforms(self):
+        import wapi_mcp_server as mcp
+
+        mock = AsyncMock()
+        mock.update_workload_settings = AsyncMock(return_value={"id": "r1", "status": "submitted"})
+        with patch("wapi_mcp_server.get_client", return_value=mock):
+            await mcp.workload_settings_update("w1", replica_count=2)
+
+        _, body = mock.update_workload_settings.call_args[0]
+        assert set(body) <= self._props("UpdateSettingsRequest")
