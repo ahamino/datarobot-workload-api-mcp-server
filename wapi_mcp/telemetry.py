@@ -18,6 +18,9 @@ import re
 from contextlib import asynccontextmanager, contextmanager
 from typing import Any, Dict, Optional
 
+# Single source for the reported service version (keep in sync with pyproject).
+__version__ = "0.5.0"
+
 # ---------------------------------------------------------------------------
 # OpenTelemetry GenAI semantic conventions
 # https://opentelemetry.io/docs/specs/semconv/gen-ai/gen-ai-spans/
@@ -79,7 +82,7 @@ def _get_otel_resource():
         from opentelemetry.sdk.resources import Resource, SERVICE_NAME, SERVICE_VERSION
         return Resource.create({
             SERVICE_NAME: os.environ.get("OTEL_SERVICE_NAME", "wapi-mcp-server"),
-            SERVICE_VERSION: "1.0.0",
+            SERVICE_VERSION: __version__,
         })
     except ImportError:
         return None
@@ -107,7 +110,7 @@ def setup_tracing():
         otlp_exporter = OTLPSpanExporter()
         tracer_provider.add_span_processor(BatchSpanProcessor(otlp_exporter))
 
-        _tracer = trace.get_tracer("wapi-mcp-server", "1.0.0")
+        _tracer = trace.get_tracer("wapi-mcp-server", __version__)
         _otel_initialized = True
         return _tracer
 
@@ -145,7 +148,7 @@ def setup_metrics():
         meter_provider = MeterProvider(resource=resource, metric_readers=[metric_reader])
         metrics.set_meter_provider(meter_provider)
 
-        _meter = metrics.get_meter("wapi-mcp-server", "1.0.0")
+        _meter = metrics.get_meter("wapi-mcp-server", __version__)
 
         _tool_call_counter = _meter.create_counter(
             name="mcp.tool.calls",
