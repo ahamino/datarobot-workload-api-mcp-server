@@ -805,13 +805,24 @@ use a specific `schema_name`, `path`, `search`, or section list.
 
 ```
 datarobot-workload-api-mcp-server/
-├── wapi_mcp_server.py       # FastMCP server with tools
+├── wapi_mcp_server.py       # Entry point: FastMCP instance, shared core
+│                            # (get_client, traced_tool, helpers), health
+│                            # routes, main(); imports + re-exports the tools
 ├── wapi_mcp/                # Core package
 │   ├── client.py            # Async HTTP client (aiohttp)
 │   ├── helpers.py           # Formatting and wait utilities
 │   ├── exceptions.py        # Custom exceptions
-│   └── telemetry.py         # OpenTelemetry integration
-├── claude_desktop_proxy.py  # Proxy for remote MCP workloads
+│   ├── telemetry.py         # OpenTelemetry integration
+│   └── tools/               # Tool definitions, grouped by domain
+│       ├── workloads.py     # workload_* + settings, stats, history, promote
+│       ├── artifacts.py     # artifact_* + builds + repositories
+│       ├── replacements.py  # artifact_replacement_* (rolling rollout)
+│       ├── protons.py       # proton_*
+│       ├── otel.py          # otel_* (logs, traces, metrics)
+│       ├── credentials.py   # credential_*
+│       ├── bundles.py       # bundle_list
+│       └── openapi.py       # read_openapi_spec
+├── claude_desktop_proxy.py  # stdio→HTTP bridge for stdio-only clients
 ├── openapi.yaml             # Workload API OpenAPI spec
 ├── requirements.txt
 ├── Dockerfile
@@ -825,7 +836,7 @@ datarobot-workload-api-mcp-server/
 | `DATAROBOT_API_ENDPOINT` | Yes | Base URL of the API (e.g., `https://app.datarobot.com/api/v2`) |
 | `DATAROBOT_API_TOKEN` | Yes | Bearer token for authentication |
 | `WAPI_MCP_SERVER_WORKLOAD_ID` | For proxy | Workload ID for start-mcp.sh proxy script |
-| `OPENAPI_SPEC_PATH` | No | Path to OpenAPI spec (default: /app/openapi.yaml) |
+| `OPENAPI_SPEC_PATH` | No | Path to the bundled OpenAPI spec (default: the openapi.yaml next to the server script; in Docker that's /app/openapi.yaml) |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | No | OpenTelemetry collector endpoint (enables tool-call tracing/metrics) |
 | `OTEL_SERVICE_NAME` | No | Service name (default: wapi-mcp-server) |
 | `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` | No | Capture tool arguments/results on spans (default: true; set false to omit) |
