@@ -928,6 +928,13 @@ like `gen_ai.tool.name` are still emitted). The legacy `tool.*` attributes
 (`tool.name`, `tool.input`, `tool.output`, `tool.status`, `tool.duration_ms`)
 are also kept for back-compat.
 
+Each outbound HTTP call to an external source (the Workload API, and the
+remote-spec / credential-schema fetches) is emitted as a child **CLIENT** span
+under the tool span, using HTTP semantic conventions: `http.request.method`,
+`http.route`, `http.response.status_code`, `url.full`, `server.address`, and
+`error.type` on failure. So a trace shows the tool call and the API requests it
+made, nested.
+
 ### WAPI MCP Server Telemetry
 
 This server exports the following when OTEL is configured:

@@ -12,7 +12,14 @@ from typing import Any, Dict, List, Optional
 import aiohttp
 
 from .exceptions import WapiAPIError, WapiConfigError
-from .telemetry import LOG, record_api_request
+from .telemetry import (
+    LOG,
+    record_api_request,
+    normalize_path,
+    trace_http_client_span,
+    HTTP_RESPONSE_STATUS_CODE,
+    ERROR_TYPE,
+)
 
 
 class WapiClient:
@@ -85,38 +92,45 @@ class WapiClient:
     ) -> Dict[str, Any]:
         """Perform an async HTTP request and raise on non-2xx response."""
         url = self._build_url(path)
+        route = normalize_path(path)
         LOG.debug("HTTP %s %s", method, url)
 
         start_time = time.time()
         status_code = 0
 
-        try:
-            async with self.session.request(
-                method=method.upper(),
-                url=url,
-                json=json_body,
-                params=params,
-            ) as resp:
-                status_code = resp.status
+        # CLIENT span for the outbound call, nested under the active tool span.
+        async with trace_http_client_span(method, url, route) as span:
+            try:
+                async with self.session.request(
+                    method=method.upper(),
+                    url=url,
+                    json=json_body,
+                    params=params,
+                ) as resp:
+                    status_code = resp.status
+                    if span:
+                        span.set_attribute(HTTP_RESPONSE_STATUS_CODE, status_code)
 
-                if resp.status >= 400:
-                    text = await resp.text()
-                    LOG.error("Request failed: %s %s -> %s", method, url, resp.status)
-                    raise WapiAPIError(
-                        status_code=resp.status,
-                        method=method.upper(),
-                        url=url,
-                        response_body=text
-                    )
+                    if resp.status >= 400:
+                        text = await resp.text()
+                        LOG.error("Request failed: %s %s -> %s", method, url, resp.status)
+                        if span:
+                            span.set_attribute(ERROR_TYPE, f"HTTP {resp.status}")
+                        raise WapiAPIError(
+                            status_code=resp.status,
+                            method=method.upper(),
+                            url=url,
+                            response_body=text
+                        )
 
-                # Return JSON or empty dict for no content
-                if resp.status == 204 or resp.content_length == 0:
-                    return {}
-                return await resp.json()
+                    # Return JSON or empty dict for no content
+                    if resp.status == 204 or resp.content_length == 0:
+                        return {}
+                    return await resp.json()
 
-        finally:
-            duration_ms = (time.time() - start_time) * 1000
-            record_api_request(method.upper(), path, status_code, duration_ms)
+            finally:
+                duration_ms = (time.time() - start_time) * 1000
+                record_api_request(method.upper(), path, status_code, duration_ms)
 
     async def _list_paginated(
         self,

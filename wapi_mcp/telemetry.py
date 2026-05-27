@@ -280,6 +280,48 @@ def normalize_path(path: str) -> str:
     return path
 
 
+# OpenTelemetry HTTP client span attributes (semconv: http.*, url.*, server.*).
+HTTP_REQUEST_METHOD = "http.request.method"
+HTTP_RESPONSE_STATUS_CODE = "http.response.status_code"
+HTTP_ROUTE = "http.route"
+URL_FULL = "url.full"
+SERVER_ADDRESS = "server.address"
+
+
+@asynccontextmanager
+async def trace_http_client_span(method: str, url: str, route: Optional[str] = None):
+    """Span for an outbound HTTP call to an external service (OTel HTTP client semconv).
+
+    Emitted as a CLIENT span and nested under whatever span is active (e.g. the
+    tool's execute_tool span), so external calls show up in the trace tree. The
+    caller should set http.response.status_code / error.type on the yielded span.
+    No-op when tracing is not configured.
+    """
+    if _tracer is None:
+        yield None
+        return
+
+    from urllib.parse import urlsplit
+    from opentelemetry.trace import Status, StatusCode, SpanKind
+
+    route = route or urlsplit(url).path
+    with _tracer.start_as_current_span(
+        f"{method.upper()} {route}", kind=SpanKind.CLIENT
+    ) as span:
+        span.set_attribute(HTTP_REQUEST_METHOD, method.upper())
+        span.set_attribute(URL_FULL, url)
+        span.set_attribute(HTTP_ROUTE, route)
+        host = urlsplit(url).hostname
+        if host:
+            span.set_attribute(SERVER_ADDRESS, host)
+        try:
+            yield span
+        except Exception as e:
+            span.set_status(Status(StatusCode.ERROR, str(e)))
+            span.record_exception(e)
+            raise
+
+
 def record_tool_call(tool_name: str, status: str, duration_ms: float, error: Optional[str] = None):
     """Record metrics for a tool call."""
     if _tool_call_counter is not None:
