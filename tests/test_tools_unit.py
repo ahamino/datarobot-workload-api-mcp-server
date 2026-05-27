@@ -746,6 +746,10 @@ class TestArtifactDeleteAndCloneTools:
         assert isinstance(result, str)
         assert "locked" in result.lower() or "art123" in result
         mock_client.patch_artifact.assert_called_once()
+        # The update body must be status-only — UpdateArtifactRequest forbids
+        # artifactRepositoryId (additionalProperties: false).
+        _, payload = mock_client.patch_artifact.call_args[0]
+        assert payload == {"status": "locked"}
 
 
 class TestWorkloadCoreTools:
@@ -984,7 +988,14 @@ class TestArtifactCoreTools:
         mock_client.get_artifact.assert_called_once_with("art123")
         mock_client.patch_artifact.assert_called_once()
         # Draft path patches the original artifact in place.
+        _, payload = mock_client.patch_artifact.call_args[0]
         assert mock_client.patch_artifact.call_args[0][0] == "art123"
+        # Write-schema conformance (UpdateArtifactRequest / MultiContainerArtifactSpec):
+        # no artifactRepositoryId at root, and the spec carries containerGroups only
+        # (NOT the read-model `type` discriminator).
+        assert "artifactRepositoryId" not in payload
+        assert set(payload["spec"].keys()) == {"containerGroups"}
+        assert payload["spec"]["containerGroups"][0]["containers"][0]["imageUri"] == "nginx:alpine"
 
     @pytest.mark.asyncio
     async def test_artifact_update_locked_clones_to_draft(self):
