@@ -32,17 +32,24 @@ def format_created_at(ts: str) -> str:
 
 
 def extract_bundle(runtime: Optional[Dict[str, Any]]) -> str:
-    """Extract bundle / GPU info from runtime.resources."""
+    """Extract resource-bundle / GPU info from a workload runtime.
+
+    The runtime is `runtime.containerGroups[]`; each group carries the requested
+    `resourceBundles` (ordered ids) and, once scheduled, a read-only
+    `resolvedBundle` ({id, gpuTypeLabel, ...}). Prefer the resolved bundle.
+    """
     if not runtime:
         return ""
-    resources = runtime.get("resources") or []
-    for r in resources:
-        bundle_id = r.get("resourceBundleId")
-        gpu_label = r.get("gpuTypeLabel")
-        if bundle_id or gpu_label:
-            if bundle_id and gpu_label:
-                return f"{bundle_id} ({gpu_label})"
-            return bundle_id or gpu_label
+    for group in runtime.get("containerGroups") or []:
+        resolved = group.get("resolvedBundle")
+        if resolved:
+            bundle_id = resolved.get("id", "")
+            gpu_label = resolved.get("gpuTypeLabel")
+            return f"{bundle_id} ({gpu_label})" if gpu_label else bundle_id
+        requested = group.get("resourceBundles") or []
+        if requested:
+            # Not yet scheduled — show the requested candidate(s).
+            return requested[0] if len(requested) == 1 else f"{requested[0]} (+{len(requested) - 1})"
     return ""
 
 
@@ -60,17 +67,21 @@ def extract_scaling_info(runtime: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     if not runtime:
         return {"replica_count": 1, "autoscaling_enabled": False}
 
-    result = {
-        "replica_count": runtime.get("replicaCount", 1),
+    # replicaCount / autoscaling live on the container group, not the runtime root.
+    groups = runtime.get("containerGroups") or []
+    group = groups[0] if groups else {}
+
+    result: Dict[str, Any] = {
+        "replica_count": group.get("replicaCount", 1),
         "autoscaling_enabled": False,
     }
 
-    autoscaling = runtime.get("autoscaling")
-    if autoscaling:
-        result["autoscaling_enabled"] = autoscaling.get("enabled", False)
-        policies = autoscaling.get("policies", [])
+    autoscaling = group.get("autoscaling")
+    if autoscaling and autoscaling.get("enabled"):
+        result["autoscaling_enabled"] = True
+        policies = autoscaling.get("policies", []) or []
+        result["policies"] = policies
         if policies:
-            # Use the first policy (typically there's only one)
             policy = policies[0]
             result["min_replicas"] = policy.get("minCount")
             result["max_replicas"] = policy.get("maxCount")
@@ -80,54 +91,61 @@ def extract_scaling_info(runtime: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     return result
 
 
+def _format_metric_target(metric: str, target: Any) -> str:
+    """Render a single 'metric: target' pair for display."""
+    if metric == "cpuAverageUtilization":
+        return f"CPU utilization: {target}%"
+    if metric == "gpuCacheUtilization":
+        return f"GPU cache: {target}%"
+    if metric == "httpRequestsConcurrency":
+        return f"HTTP concurrency: {target}"
+    return f"{metric}: {target}"
+
+
 def format_scaling_info(runtime: Optional[Dict[str, Any]]) -> str:
     """Format scaling settings as a human-readable string."""
     info = extract_scaling_info(runtime)
 
-    if info.get("autoscaling_enabled"):
-        metric = info.get("scaling_metric", "unknown")
-        # Make metric more readable
-        if metric == "cpuAverageUtilization":
-            metric_display = "CPU utilization"
-            target_display = f"{info.get('target', 0)}%"
-        elif metric == "httpRequestsConcurrency":
-            metric_display = "HTTP concurrency"
-            target_display = str(info.get("target", 0))
-        else:
-            metric_display = metric
-            target_display = str(info.get("target", 0))
-
-        return (
-            f"Autoscaling: enabled ({info.get('min_replicas', 0)}-{info.get('max_replicas', 0)} replicas, "
-            f"target {metric_display}: {target_display})"
-        )
-    else:
+    if not info.get("autoscaling_enabled"):
         return f"Replicas: {info.get('replica_count', 1)} (fixed)"
 
+    policies = info.get("policies") or []
+    if len(policies) > 1:
+        # Stacked policies — the autoscaler scales on whichever wants more replicas.
+        rng = f"{policies[0].get('minCount', 0)}-{policies[0].get('maxCount', 0)}"
+        targets = "; ".join(
+            _format_metric_target(p.get("scalingMetric", "?"), p.get("target", 0)) for p in policies
+        )
+        return f"Autoscaling: enabled ({rng} replicas, {len(policies)} policies — {targets})"
 
-def format_status_details(entity: Dict[str, Any]) -> str:
-    """Format statusDetails for progress reporting."""
-    status_details = entity.get("statusDetails", {})
+    target_display = _format_metric_target(info.get("scaling_metric", "unknown"), info.get("target", 0))
+    return (
+        f"Autoscaling: enabled ({info.get('min_replicas', 0)}-{info.get('max_replicas', 0)} replicas, "
+        f"target {target_display})"
+    )
+
+
+async def _diagnose_workload(client: "WapiClient", workload_id: str) -> str:
+    """Best-effort failure diagnostics for a workload.
+
+    The public workload object no longer carries statusDetails — per-replica
+    detail lives on the proton's /statusDetails endpoint — so summarize each
+    proton's status and point at the tools that show full logs/conditions.
+    """
     lines = []
-
-    # Conditions (ContainersReady, Ready, etc.)
-    conditions = status_details.get("conditions", [])
-    if conditions:
-        cond_strs = []
-        for c in conditions:
-            name = c.get("name") or c.get("type", "unknown")
-            value = c.get("value", "unknown")
-            cond_strs.append(f"{name}={value}")
-        lines.append(f"Conditions: {', '.join(cond_strs)}")
-
-    # Log tail (shows container startup errors)
-    log_tail = status_details.get("logTail", [])
-    if log_tail:
-        lines.append("Recent logs:")
-        for log_line in log_tail[-10:]:
-            lines.append(f"  {log_line}")
-
-    return "\n".join(lines) if lines else "No status details available"
+    try:
+        protons = await client.list_workload_protons(workload_id, limit=10)
+        for p in protons.get("data", []) or []:
+            lines.append(
+                f"  proton {p.get('id')}: role={p.get('role', '?')} status={p.get('status', '?')}"
+            )
+    except Exception:
+        pass
+    lines.append(
+        f'Inspect: otel_logs("{workload_id}") for application logs; '
+        f'proton_status_details("{workload_id}", <proton_id>) for per-replica conditions.'
+    )
+    return "\n".join(lines)
 
 
 async def wait_for_status(
@@ -178,52 +196,34 @@ async def wait_for_workload_with_progress(
     Wait for workload to reach 'running' status with detailed progress.
     Returns (workload, progress_log).
     """
-    deadline = time.time() + timeout_seconds
+    start = time.time()
+    deadline = start + timeout_seconds
     progress_lines = []
     last_status = None
-    last_conditions = None
 
     while True:
         workload = await client.get_workload(workload_id)
         status = workload.get("status")
-        status_details = workload.get("statusDetails", {})
-        conditions = status_details.get("conditions", [])
-        log_tail = status_details.get("logTail", [])
 
-        # Build conditions string
-        cond_str = ", ".join([
-            f"{c.get('name', c.get('type', '?'))}={c.get('value', '?')}"
-            for c in conditions
-        ]) if conditions else "none"
-
-        # Log progress if status or conditions changed
-        if status != last_status or str(conditions) != str(last_conditions):
-            elapsed = int(time.time() + timeout_seconds - deadline)
-            progress_lines.append(f"[{elapsed}s] Status: {status} | {cond_str}")
+        # Log progress on each status transition.
+        if status != last_status:
+            progress_lines.append(f"[{int(time.time() - start)}s] Status: {status}")
             last_status = status
-            last_conditions = conditions
 
         # Success
         if status == "running":
             progress_lines.append("Workload is now running!")
             return workload, "\n".join(progress_lines)
 
-        # Error - include log tail
+        # Error / timeout — attach best-effort per-proton diagnostics.
         if status == "errored":
             progress_lines.append("ERROR: Workload entered 'errored' state")
-            if log_tail:
-                progress_lines.append("Container logs:")
-                for line in log_tail[-15:]:
-                    progress_lines.append(f"  {line}")
+            progress_lines.append(await _diagnose_workload(client, workload_id))
             raise RuntimeError("\n".join(progress_lines))
 
-        # Timeout
         if time.time() >= deadline:
             progress_lines.append(f"TIMEOUT after {timeout_seconds}s. Last status: {status}")
-            if log_tail:
-                progress_lines.append("Container logs:")
-                for line in log_tail[-15:]:
-                    progress_lines.append(f"  {line}")
+            progress_lines.append(await _diagnose_workload(client, workload_id))
             raise TimeoutError("\n".join(progress_lines))
 
         await asyncio.sleep(poll_interval_seconds)
