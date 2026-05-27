@@ -38,6 +38,8 @@ from wapi_mcp.telemetry import (
     GEN_AI_TOOL_CALL_ARGUMENTS,
     GEN_AI_TOOL_CALL_RESULT,
     ERROR_TYPE,
+    trace_http_client_span,
+    HTTP_RESPONSE_STATUS_CODE,
 )
 
 
@@ -351,7 +353,10 @@ async def get_credential_schemas() -> dict[str, list[str]]:
         import aiohttp
         import re
         async with aiohttp.ClientSession() as session:
-            async with session.get(openapi_url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+            async with trace_http_client_span("GET", openapi_url) as span, \
+                    session.get(openapi_url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                if span:
+                    span.set_attribute(HTTP_RESPONSE_STATUS_CODE, resp.status)
                 if resp.status != 200:
                     LOG.warning(f"Failed to fetch OpenAPI spec: HTTP {resp.status}")
                     _credential_schemas_cache = FALLBACK_CREDENTIAL_KEYS
@@ -500,9 +505,10 @@ async def _load_openapi_spec_remote() -> dict:
         LOG.info(f"Fetching master OpenAPI spec from {url}")
         headers = {"Authorization": f"Bearer {client.token}"}
         async with aiohttp.ClientSession() as session:
-            async with session.get(
-                url, headers=headers, timeout=aiohttp.ClientTimeout(total=15)
-            ) as resp:
+            async with trace_http_client_span("GET", url) as span, \
+                    session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                if span:
+                    span.set_attribute(HTTP_RESPONSE_STATUS_CODE, resp.status)
                 if resp.status != 200:
                     raise RuntimeError(
                         f"Failed to fetch master OpenAPI spec from {url}: HTTP {resp.status}"
