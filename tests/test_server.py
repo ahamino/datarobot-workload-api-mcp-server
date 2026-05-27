@@ -24,6 +24,31 @@ class TestServerImport:
         import wapi_mcp_server
         assert hasattr(wapi_mcp_server, 'mcp')
 
+    def test_entrypoint_runs_as_main(self):
+        """`python wapi_mcp_server.py` must load as __main__ without errors.
+
+        Importing the module (what every other test does) does NOT exercise the
+        __main__ path the Docker entrypoint and local stdio use. The module-split
+        circular import only manifested there. Run the real entrypoint in a
+        subprocess so that regression is caught. `-h` makes argparse exit 0 after
+        the whole module (incl. tool registration) has loaded.
+        """
+        import pathlib
+        import subprocess
+        import sys
+
+        repo = pathlib.Path(__file__).resolve().parent.parent
+        proc = subprocess.run(
+            [sys.executable, "wapi_mcp_server.py", "-h"],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        assert proc.returncode == 0, f"entrypoint failed (rc={proc.returncode}):\n{proc.stderr}"
+        assert "usage:" in proc.stdout.lower()
+        assert "Traceback" not in proc.stderr and "ImportError" not in proc.stderr
+
 
 class TestToolRegistration:
     """Tests for tool registration."""
