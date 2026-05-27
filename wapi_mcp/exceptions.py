@@ -78,95 +78,24 @@ class WapiAPIError(Exception):
         return f"{base_msg}\n\nServer response: {detail}{guidance}"
 
     def _get_guidance(self) -> str:
-        """Get helpful guidance based on HTTP status code."""
-        if self.status_code == 400:
-            return """
+        """Append a short, accurate hint based on HTTP status code.
 
-BAD REQUEST - The request was malformed.
-Common causes:
-- Invalid JSON syntax in payload
-- Missing required fields
-- Invalid field values or types"""
-
-        elif self.status_code == 401:
-            return """
-
-UNAUTHORIZED - Authentication failed.
-Check that DATAROBOT_API_TOKEN is valid and not expired."""
-
-        elif self.status_code == 403:
-            return """
-
-FORBIDDEN - You don't have permission for this action.
-Check your user permissions for this resource."""
-
-        elif self.status_code == 404:
-            return """
-
-NOT FOUND - The resource doesn't exist.
-Check that the ID is correct and the resource hasn't been deleted."""
-
-        elif self.status_code == 409:
-            return """
-
-CONFLICT - Resource state conflict.
-Common causes:
-- Trying to delete a running workload (stop it first)
-- Trying to update a registered artifact (create a new version instead)
-- Resource name already exists"""
-
-        elif self.status_code == 422:
-            return """
-
-UNPROCESSABLE ENTITY - Validation failed.
-
-Common issues for WORKLOAD creation:
-- 'type' must be 'generic' (literal value, not a variable)
-- Port must be >= 1024 (non-privileged ports only)
-- resourceRequest.cpu and resourceRequest.memory are REQUIRED
-- Exactly ONE container must have 'primary: true'
-- entrypoint must be array of strings: ["cmd", "arg1"]
-
-Required CreateWorkloadRequest structure:
-{
-  "name": "workload-name",
-  "artifactId": "existing-artifact-id"   // OR use inline 'artifact'
-  // OR
-  "artifact": {
-    "name": "artifact-name",
-    "type": "generic",                   // REQUIRED literal
-    "spec": {
-      "containerGroups": [{
-        "containers": [{
-          "imageUri": "registry/image:tag",
-          "port": 8000,                   // Must be >= 1024
-          "primary": true,                // Required on one container
-          "resourceRequest": {
-            "cpu": 1.0,                   // Required (number)
-            "memory": 536870912           // Required (bytes)
-          }
-        }]
-      }]
-    }
-  },
-  "runtime": {"replicaCount": 1}
-}
-
-For ARTIFACT creation: type must be "generic" (the literal string)
-
-For probes: 'path' is REQUIRED in ProbeConfig:
-  "readinessProbe": {"path": "/healthz", "port": 8000}"""
-
-        elif self.status_code == 500:
-            return """
-
-INTERNAL SERVER ERROR - Server-side error.
-This is usually temporary. Try again in a few moments."""
-
-        elif self.status_code in (502, 503, 504):
-            return """
-
-SERVICE UNAVAILABLE/TIMEOUT - The service is temporarily unavailable.
-Wait a moment and retry the request."""
-
-        return ""
+        The server's own validation detail (parsed in _format_message) is the
+        source of truth. Keep these hints generic and one line — do NOT restate
+        request schemas here, which drift from the API and mislead callers. For
+        the exact accepted shape, query the spec via read_openapi_spec().
+        """
+        hints = {
+            400: "Bad request — malformed payload or invalid field values. See the server response above.",
+            401: "Unauthorized — check that DATAROBOT_API_TOKEN is valid and not expired.",
+            403: "Forbidden — your user lacks permission for this resource.",
+            404: "Not found — check the ID is correct and the resource still exists.",
+            409: "Conflict — the resource is in a state that blocks this action (e.g. stop a running workload before deleting).",
+            422: "Validation failed — see the server response above for the exact field(s). "
+                 "Use read_openapi_spec(schema_name=..., source='remote') for the accepted shape.",
+            500: "Internal server error — usually transient; retry shortly.",
+        }
+        if self.status_code in (502, 503, 504):
+            return "\n\nService unavailable/timeout — wait a moment and retry."
+        hint = hints.get(self.status_code)
+        return f"\n\n{hint}" if hint else ""

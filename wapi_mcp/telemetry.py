@@ -219,25 +219,26 @@ def trace_span(name: str, attributes: Optional[Dict[str, Any]] = None):
         yield None
         return
 
-    try:
-        from opentelemetry.trace import Status, StatusCode
+    # NOTE: do not wrap the `yield` in a try/except that yields again — a
+    # contextmanager must yield exactly once, and a second yield while handling
+    # a body exception raises "generator didn't stop after throw()". The import
+    # is safe here because _tracer is only set once OpenTelemetry is configured.
+    from opentelemetry.trace import Status, StatusCode
 
-        with _tracer.start_as_current_span(name) as span:
-            if attributes:
-                for key, value in attributes.items():
-                    if value is not None:
-                        span.set_attribute(
-                            key,
-                            str(value) if not isinstance(value, (str, int, float, bool)) else value
-                        )
-            try:
-                yield span
-            except Exception as e:
-                span.set_status(Status(StatusCode.ERROR, str(e)))
-                span.record_exception(e)
-                raise
-    except Exception:
-        yield None
+    with _tracer.start_as_current_span(name) as span:
+        if attributes:
+            for key, value in attributes.items():
+                if value is not None:
+                    span.set_attribute(
+                        key,
+                        str(value) if not isinstance(value, (str, int, float, bool)) else value
+                    )
+        try:
+            yield span
+        except Exception as e:
+            span.set_status(Status(StatusCode.ERROR, str(e)))
+            span.record_exception(e)
+            raise
 
 
 @asynccontextmanager
@@ -250,25 +251,26 @@ async def trace_span_async(name: str, attributes: Optional[Dict[str, Any]] = Non
         yield None
         return
 
-    try:
-        from opentelemetry.trace import Status, StatusCode
+    # NOTE: do not wrap the `yield` in a try/except that yields again — a
+    # contextmanager must yield exactly once, and a second yield while handling
+    # a body exception raises "generator didn't stop after throw()". The import
+    # is safe here because _tracer is only set once OpenTelemetry is configured.
+    from opentelemetry.trace import Status, StatusCode
 
-        with _tracer.start_as_current_span(name) as span:
-            if attributes:
-                for key, value in attributes.items():
-                    if value is not None:
-                        span.set_attribute(
-                            key,
-                            str(value) if not isinstance(value, (str, int, float, bool)) else value
-                        )
-            try:
-                yield span
-            except Exception as e:
-                span.set_status(Status(StatusCode.ERROR, str(e)))
-                span.record_exception(e)
-                raise
-    except Exception:
-        yield None
+    with _tracer.start_as_current_span(name) as span:
+        if attributes:
+            for key, value in attributes.items():
+                if value is not None:
+                    span.set_attribute(
+                        key,
+                        str(value) if not isinstance(value, (str, int, float, bool)) else value
+                    )
+        try:
+            yield span
+        except Exception as e:
+            span.set_status(Status(StatusCode.ERROR, str(e)))
+            span.record_exception(e)
+            raise
 
 
 def normalize_path(path: str) -> str:
