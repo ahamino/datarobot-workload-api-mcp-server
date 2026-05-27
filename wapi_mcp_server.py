@@ -1937,10 +1937,9 @@ async def artifact_update(
     if description is not None:
         payload["description"] = description
 
-    # Keep the new draft under the same repository as the locked source if the
-    # clone didn't already inherit it.
-    if is_locked and repo_id and not current.get("artifactRepositoryId"):
-        payload["artifactRepositoryId"] = repo_id
+    # Note: the update body (UpdateArtifactRequest) does not accept
+    # artifactRepositoryId — repo association is set at create time and the clone
+    # already inherits it, so there is nothing to send here.
 
     # Build container updates if any container fields provided
     container_fields = {
@@ -1952,8 +1951,9 @@ async def artifact_update(
     if any(v is not None for v in container_fields.values()):
         current_spec = current.get("spec", {})
         container_groups = current_spec.get("containerGroups", [{}])
-        containers = container_groups[0].get("containers", [{}]) if container_groups else [{}]
-        container = containers[0] if containers else {}
+        group0 = dict(container_groups[0]) if container_groups else {}
+        containers = group0.get("containers") or [{}]
+        container = containers[0]
 
         # Update container fields
         if image_uri is not None:
@@ -1979,13 +1979,12 @@ async def artifact_update(
                 "initialDelaySeconds": 30,
             }
 
-        # Rebuild spec
-        payload["spec"] = {
-            "type": current_spec.get("type", "service"),
-            "containerGroups": [{
-                "containers": [container]
-            }]
-        }
+        # Rebuild spec. The write model (UpdateArtifactRequest.spec =
+        # MultiContainerArtifactSpec) only permits `containerGroups` — NOT the
+        # `type` discriminator that the read model carries. Preserve the existing
+        # group (name + any sibling containers) with the updated container.
+        group0["containers"] = containers
+        payload["spec"] = {"containerGroups": [group0]}
 
     # For a locked source the clone alone may already capture the change (e.g. a
     # rename), so an empty payload there is fine — for a draft it is an error.
@@ -2007,7 +2006,7 @@ Your edits were applied to the new draft; the original locked artifact is unchan
 
 To deploy it to a workload (rollouts require draft<->draft / locked<->locked):
   - Workload running a LOCKED artifact: lock the new draft first, then roll out:
-      artifact_lock(artifact_id="{target_id}", repository_id="{new_repo}")
+      artifact_lock(artifact_id="{target_id}")
       artifact_replacement_create(workload_id="<id>", artifact_id="{target_id}")
   - Workload running a DRAFT artifact: roll it out directly:
       artifact_replacement_create(workload_id="<id>", artifact_id="{target_id}")"""
@@ -2181,22 +2180,21 @@ async def artifact_build_logs(artifact_id: str, build_id: str) -> str:
 
 @mcp.tool()
 @traced_tool
-async def artifact_lock(artifact_id: str, repository_id: Optional[str] = None) -> str:
-    """Lock an artifact (make it immutable).
+async def artifact_lock(artifact_id: str) -> str:
+    """Lock an artifact (make it immutable), creating a new version in its repository.
 
     Once locked, an artifact cannot be modified. This is required for
     production workloads to ensure consistency.
 
+    The artifact's repository association is set at creation time (and inherited by
+    clones), so locking only flips the status — the update API does not accept an
+    artifactRepositoryId. The artifact keeps whatever repository it already belongs to.
+
     Args:
         artifact_id: The artifact ID to lock
-        repository_id: Optional artifact repository ID for versioning
     """
     client = await get_client()
-    payload: dict = {"status": "locked"}
-    if repository_id:
-        payload["artifactRepositoryId"] = repository_id
-
-    artifact = await client.patch_artifact(artifact_id, payload)
+    artifact = await client.patch_artifact(artifact_id, {"status": "locked"})
     return f"Locked artifact {artifact_id}:\n{json.dumps(artifact, indent=2)}"
 
 
