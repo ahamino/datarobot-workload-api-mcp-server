@@ -8,6 +8,7 @@ bundles, and querying the OpenAPI specification.
 
 import json
 import os
+import sys
 import time
 from functools import wraps
 from pathlib import Path
@@ -533,6 +534,14 @@ def _dump_capped(obj, max_chars: int = MAX_OPENAPI_RESPONSE_CHARS) -> str:
 # ---------------------------------------------------------------------------
 # Tool modules
 # ---------------------------------------------------------------------------
+# The tool modules do `import wapi_mcp_server`. When this file is run directly
+# (python wapi_mcp_server.py — the container entrypoint and local stdio), it loads
+# as "__main__", so that import would otherwise pull a SECOND, half-initialized
+# copy of this module and fail with a circular ImportError. Alias __main__ as
+# "wapi_mcp_server" first so the tool imports resolve to this same module.
+if __name__ == "__main__":
+    sys.modules.setdefault("wapi_mcp_server", sys.modules["__main__"])
+
 # Importing the tool modules (after all shared core/helpers above are defined)
 # registers their @mcp.tool functions; the re-exports make them accessible as
 # wapi_mcp_server.<tool> for back-compat with tests and existing callers.
