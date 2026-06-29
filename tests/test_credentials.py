@@ -34,15 +34,15 @@ components:
 """
 
         with patch('wapi_mcp_server.get_client', return_value=mock_client):
-            with patch('aiohttp.ClientSession') as mock_session_class:
+            with patch('httpx.AsyncClient') as mock_client_class:
                 mock_session = AsyncMock()
-                mock_resp = AsyncMock()
-                mock_resp.status = 200
-                mock_resp.text = AsyncMock(return_value=openapi_spec)
+                mock_resp = MagicMock()
+                mock_resp.status_code = 200
+                mock_resp.text = openapi_spec
                 mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-                mock_session.__aexit__ = AsyncMock()
-                mock_session.get = MagicMock(return_value=mock_resp)
-                mock_session_class.return_value = mock_session
+                mock_session.__aexit__ = AsyncMock(return_value=False)
+                mock_session.get = AsyncMock(return_value=mock_resp)
+                mock_client_class.return_value = mock_session
 
                 # First call should fetch from API
                 result1 = await mcp.get_credential_schemas()
@@ -64,14 +64,14 @@ components:
         mock_client.base_url = "https://test.datarobot.com/api/v2"
 
         with patch('wapi_mcp_server.get_client', return_value=mock_client):
-            with patch('aiohttp.ClientSession') as mock_session_class:
+            with patch('httpx.AsyncClient') as mock_client_class:
                 mock_session = AsyncMock()
-                mock_resp = AsyncMock()
-                mock_resp.status = 500  # Simulate error
+                mock_resp = MagicMock()
+                mock_resp.status_code = 500  # Simulate error
                 mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-                mock_session.__aexit__ = AsyncMock()
-                mock_session.get = MagicMock(return_value=mock_resp)
-                mock_session_class.return_value = mock_session
+                mock_session.__aexit__ = AsyncMock(return_value=False)
+                mock_session.get = AsyncMock(return_value=mock_resp)
+                mock_client_class.return_value = mock_session
 
                 result = await mcp.get_credential_schemas()
                 # Should return fallback keys
@@ -120,15 +120,15 @@ components:
 """
 
         with patch('wapi_mcp_server.get_client', return_value=mock_client):
-            with patch('aiohttp.ClientSession') as mock_session_class:
+            with patch('httpx.AsyncClient') as mock_client_class:
                 mock_session = AsyncMock()
-                mock_resp = AsyncMock()
-                mock_resp.status = 200
-                mock_resp.text = AsyncMock(return_value=openapi_spec)
+                mock_resp = MagicMock()
+                mock_resp.status_code = 200
+                mock_resp.text = openapi_spec
                 mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-                mock_session.__aexit__ = AsyncMock()
-                mock_session.get = MagicMock(return_value=mock_resp)
-                mock_session_class.return_value = mock_session
+                mock_session.__aexit__ = AsyncMock(return_value=False)
+                mock_session.get = AsyncMock(return_value=mock_resp)
+                mock_client_class.return_value = mock_session
 
                 result = await mcp.get_credential_schemas()
 
@@ -171,15 +171,15 @@ components:
 """
 
         with patch('wapi_mcp_server.get_client', return_value=mock_client):
-            with patch('aiohttp.ClientSession') as mock_session_class:
+            with patch('httpx.AsyncClient') as mock_client_class:
                 mock_session = AsyncMock()
-                mock_resp = AsyncMock()
-                mock_resp.status = 200
-                mock_resp.text = AsyncMock(return_value=openapi_spec)
+                mock_resp = MagicMock()
+                mock_resp.status_code = 200
+                mock_resp.text = openapi_spec
                 mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-                mock_session.__aexit__ = AsyncMock()
-                mock_session.get = MagicMock(return_value=mock_resp)
-                mock_session_class.return_value = mock_session
+                mock_session.__aexit__ = AsyncMock(return_value=False)
+                mock_session.get = AsyncMock(return_value=mock_resp)
+                mock_client_class.return_value = mock_session
 
                 result = await mcp.get_credential_schemas()
 

@@ -48,7 +48,7 @@ async def _discover_id(api_endpoint, api_token, kind, status=None):
 async def reset_mcp_client():
     """Reset and properly close the global MCP client around each test.
 
-    The client owns an aiohttp session; closing it on the test's own event loop
+    The client owns an httpx.AsyncClient; closing it on the test's own event loop
     (rather than dropping the reference) avoids the "Unclosed client session" /
     "Event loop is closed" teardown noise.
     """
