@@ -92,7 +92,10 @@ class WapiAPIError(Exception):
             404: "Not found — check the ID is correct and the resource still exists.",
             409: "Conflict — the resource is in a state that blocks this action (e.g. stop a running workload before deleting).",
             422: "Validation failed — see the server response above for the exact field(s). "
-                 "Use read_openapi_spec(schema_name=..., source='remote') for the accepted shape.",
+                 "Use read_openapi_spec(schema_name=...) for the accepted shape. "
+                 "If this is `runtime_image_uri ... None` on workload create, the artifact's "
+                 "build is likely still BUILT (built but not pushed) rather than COMPLETED — wait "
+                 "for COMPLETED, then retry.",
             500: "Internal server error — usually transient; retry shortly.",
         }
         if self.status_code in (502, 503, 504):

@@ -435,7 +435,11 @@ async def artifact_build_trigger(artifact_id: str) -> str:
 Build IDs: {", ".join(build_ids)}
 
 Use artifact_build_get(artifact_id, build_id) to check build status.
-Use artifact_build_logs(artifact_id, build_id) to view build logs."""
+Use artifact_build_logs(artifact_id, build_id) to view build logs.
+
+Wait for status COMPLETED before scheduling a workload — BUILT means the image
+was built but not yet pushed to the registry, and deploying then fails with
+`422 runtime_image_uri ... None`."""
 
 
 @mcp.tool()
@@ -461,11 +465,31 @@ Created: {created}
 Updated: {updated}
 """
 
-    if status == "FAILED":
+    # Normalize: some flows (C2W) return lowercase/dash-cased variants
+    # (pending / in-progress / completed / failed).
+    norm = status.upper().replace("-", "_")
+
+    # Progression: PENDING -> IN_PROGRESS -> BUILT -> COMPLETED (or FAILED).
+    # BUILT and COMPLETED are SEQUENTIAL, not equivalent. BUILT means the image
+    # was built locally but NOT yet pushed to the registry, so it is NOT
+    # deployable — scheduling a workload on a BUILT artifact returns
+    # `422 runtime_image_uri ... None`. Only COMPLETED is a green light.
+    if norm == "FAILED":
         result += "\nBuild FAILED. Use artifact_build_logs() to see error details."
-    elif status == "COMPLETED" or status == "BUILT":
-        result += "\nBuild completed successfully!"
-    elif status in ("PENDING", "IN_PROGRESS"):
+    elif norm == "COMPLETED":
+        result += (
+            "\nBuild COMPLETED — image built AND pushed to the registry. "
+            "It is now deployable; the artifact's imageUri is populated."
+        )
+    elif norm == "BUILT":
+        result += (
+            "\nBuild status is BUILT — the image was built locally but has NOT been "
+            "pushed to the registry yet, so it is NOT deployable. Keep polling: only "
+            "COMPLETED is a green light. Scheduling a workload now would fail with "
+            "`422 runtime_image_uri ... None`. The gap to COMPLETED can be seconds "
+            "to minutes for large images."
+        )
+    elif norm in ("PENDING", "IN_PROGRESS"):
         result += "\nBuild in progress. Check again later."
 
     return result

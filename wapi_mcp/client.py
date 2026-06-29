@@ -9,7 +9,7 @@ and bundles.
 import time
 from typing import Any, Dict, List, Optional
 
-import aiohttp
+import httpx
 
 from .exceptions import WapiAPIError, WapiConfigError
 from .telemetry import (
@@ -33,12 +33,12 @@ class WapiClient:
 
         self.base_url = base_url.rstrip("/")
         self.token = token
-        self.timeout = aiohttp.ClientTimeout(total=timeout)
-        self._session: Optional[aiohttp.ClientSession] = None
+        self.timeout = httpx.Timeout(timeout)
+        self._session: Optional[httpx.AsyncClient] = None
 
-    def _new_session(self) -> aiohttp.ClientSession:
-        """Build an aiohttp session with auth + content-type headers."""
-        return aiohttp.ClientSession(
+    def _new_session(self) -> httpx.AsyncClient:
+        """Build an httpx async client with auth + content-type headers."""
+        return httpx.AsyncClient(
             timeout=self.timeout,
             headers={
                 "Authorization": f"Bearer {self.token}",
@@ -56,8 +56,8 @@ class WapiClient:
         await self.close()
 
     @property
-    def session(self) -> aiohttp.ClientSession:
-        """Active session, created lazily on first use.
+    def session(self) -> httpx.AsyncClient:
+        """Active client, created lazily on first use.
 
         Must be created with a running event loop, hence the lazy init. The MCP
         server keeps one client (and session) for the process lifetime; short-lived
@@ -101,32 +101,32 @@ class WapiClient:
         # CLIENT span for the outbound call, nested under the active tool span.
         async with trace_http_client_span(method, url, route) as span:
             try:
-                async with self.session.request(
-                    method=method.upper(),
-                    url=url,
+                resp = await self.session.request(
+                    method.upper(),
+                    url,
                     json=json_body,
                     params=params,
-                ) as resp:
-                    status_code = resp.status
+                )
+                status_code = resp.status_code
+                if span:
+                    span.set_attribute(HTTP_RESPONSE_STATUS_CODE, status_code)
+
+                if resp.status_code >= 400:
+                    text = resp.text
+                    LOG.error("Request failed: %s %s -> %s", method, url, resp.status_code)
                     if span:
-                        span.set_attribute(HTTP_RESPONSE_STATUS_CODE, status_code)
+                        span.set_attribute(ERROR_TYPE, f"HTTP {resp.status_code}")
+                    raise WapiAPIError(
+                        status_code=resp.status_code,
+                        method=method.upper(),
+                        url=url,
+                        response_body=text
+                    )
 
-                    if resp.status >= 400:
-                        text = await resp.text()
-                        LOG.error("Request failed: %s %s -> %s", method, url, resp.status)
-                        if span:
-                            span.set_attribute(ERROR_TYPE, f"HTTP {resp.status}")
-                        raise WapiAPIError(
-                            status_code=resp.status,
-                            method=method.upper(),
-                            url=url,
-                            response_body=text
-                        )
-
-                    # Return JSON or empty dict for no content
-                    if resp.status == 204 or resp.content_length == 0:
-                        return {}
-                    return await resp.json()
+                # Return JSON or empty dict for no content
+                if resp.status_code == 204 or not resp.content:
+                    return {}
+                return resp.json()
 
             finally:
                 duration_ms = (time.time() - start_time) * 1000
@@ -617,16 +617,15 @@ class WapiClient:
     async def get_artifact_build_logs(self, artifact_id: str, build_id: str) -> str:
         """Get logs for an image build."""
         url = self._build_url(f"/api/v2/artifacts/{artifact_id}/builds/{build_id}/logs/")
-        async with self.session.request("GET", url) as resp:
-            if resp.status >= 400:
-                text = await resp.text()
-                raise WapiAPIError(
-                    status_code=resp.status,
-                    method="GET",
-                    url=url,
-                    response_body=text
-                )
-            return await resp.text()
+        resp = await self.session.get(url)
+        if resp.status_code >= 400:
+            raise WapiAPIError(
+                status_code=resp.status_code,
+                method="GET",
+                url=url,
+                response_body=resp.text
+            )
+        return resp.text
 
     # -------------------- Artifact Repositories -------------------------
 
@@ -777,5 +776,5 @@ class WapiClient:
     async def close(self) -> None:
         """Close the client session."""
         if self._session:
-            await self._session.close()
+            await self._session.aclose()
             self._session = None
