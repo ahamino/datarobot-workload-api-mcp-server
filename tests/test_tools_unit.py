@@ -198,6 +198,38 @@ class TestArtifactBuildTools:
         mock_client.get_artifact_build.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_artifact_build_get_built_not_deployable(self):
+        """BUILT must be reported as not-yet-deployable, not as success."""
+        import wapi_mcp_server as mcp
+
+        mock_client = AsyncMock()
+        mock_client.get_artifact_build = AsyncMock(
+            return_value={"id": "b1", "status": "BUILT"}
+        )
+        with patch('wapi_mcp_server.get_client', return_value=mock_client):
+            result = await mcp.artifact_build_get("art123", "b1")
+
+        assert "NOT" in result and "deployable" in result.lower()
+        assert "422" in result
+        # Must not claim the build is finished/deployable.
+        assert "completed successfully" not in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_artifact_build_get_completed_is_deployable(self):
+        """COMPLETED is the only deployable green light."""
+        import wapi_mcp_server as mcp
+
+        mock_client = AsyncMock()
+        mock_client.get_artifact_build = AsyncMock(
+            return_value={"id": "b1", "status": "completed"}  # lowercase variant
+        )
+        with patch('wapi_mcp_server.get_client', return_value=mock_client):
+            result = await mcp.artifact_build_get("art123", "b1")
+
+        assert "deployable" in result.lower()
+        assert "pushed" in result.lower()
+
+    @pytest.mark.asyncio
     async def test_artifact_build_logs(self):
         """Test artifact_build_logs tool."""
         import wapi_mcp_server as mcp
@@ -496,58 +528,73 @@ class TestProtonTools:
 
 
 class TestOpenAPITool:
-    """Unit tests for OpenAPI tool."""
+    """Unit tests for OpenAPI tool.
 
-    @pytest.mark.asyncio
-    async def test_read_openapi_spec_local_file(self):
-        """Test read_openapi_spec with local file."""
+    The spec is fetched live at runtime; these tests patch the loader with the
+    pinned tests/fixtures/openapi.yaml so they run offline.
+    """
+
+    @staticmethod
+    def _patch_fixture_spec(monkeypatch):
+        """Point the spec loader at the pinned fixture and return the loaded spec."""
+        import pathlib
+        import yaml
         import wapi_mcp_server as mcp
 
+        spec_path = pathlib.Path(__file__).resolve().parent / "fixtures" / "openapi.yaml"
+        spec = yaml.safe_load(spec_path.read_text())
+
+        async def fake_loader():
+            return spec
+
+        monkeypatch.setattr(mcp, "_openapi_cache", None)
+        monkeypatch.setattr(mcp, "_load_openapi_spec", fake_loader)
+        return spec_path, spec
+
+    @pytest.mark.asyncio
+    async def test_read_openapi_spec_overview(self, monkeypatch):
+        """Default call returns a bounded overview from the live spec."""
+        import wapi_mcp_server as mcp
+
+        self._patch_fixture_spec(monkeypatch)
         result = await mcp.read_openapi_spec()
 
         assert isinstance(result, str)
-        # Should contain OpenAPI spec content
-        assert "openapi" in result.lower() or "components" in result.lower()
+        assert "OVERVIEW" in result
+        # Reports that the source is the live spec, not a bundled snapshot.
+        assert "live" in result.lower()
 
     @pytest.mark.asyncio
-    async def test_read_openapi_spec_with_path(self):
-        """Test read_openapi_spec with specific path."""
+    async def test_read_openapi_spec_with_path(self, monkeypatch):
+        """A path query filters to the matching endpoint(s)."""
         import wapi_mcp_server as mcp
 
-        result = await mcp.read_openapi_spec(path="/paths/~1api~1v2~1workloads~1/get")
+        self._patch_fixture_spec(monkeypatch)
+        result = await mcp.read_openapi_spec(path="/workloads")
 
         assert isinstance(result, str)
-        # Should filter to specific path or indicate filtering
 
     @pytest.mark.asyncio
     async def test_read_openapi_spec_all_does_not_dump_full_spec(self, monkeypatch):
         """section='all' must NOT return the whole spec into context."""
-        import pathlib
         import wapi_mcp_server as mcp
 
-        spec_path = pathlib.Path(__file__).resolve().parent.parent / "openapi.yaml"
-        monkeypatch.setattr(mcp, "OPENAPI_SPEC_PATH", spec_path)
-        monkeypatch.setattr(mcp, "_openapi_cache", None)
-
+        spec_path, _ = self._patch_fixture_spec(monkeypatch)
         result = await mcp.read_openapi_spec(section="all")
 
         assert isinstance(result, str)
         # Guidance message, not the spec: short and free of bulk schema dumps.
         assert len(result) < 1000
         assert "read_openapi_spec(" in result
-        # The real spec is ~160KB; make sure that volume never comes back.
+        # The real spec is large; make sure that volume never comes back.
         assert len(result) < len(spec_path.read_text()) / 10
 
     @pytest.mark.asyncio
     async def test_read_openapi_spec_responses_are_bounded(self, monkeypatch):
-        """No query should exceed the response cap (full spec is ~160KB)."""
-        import pathlib
+        """No query should exceed the response cap (the full spec can be several MB)."""
         import wapi_mcp_server as mcp
 
-        spec_path = pathlib.Path(__file__).resolve().parent.parent / "openapi.yaml"
-        monkeypatch.setattr(mcp, "OPENAPI_SPEC_PATH", spec_path)
-        monkeypatch.setattr(mcp, "_openapi_cache", None)
-
+        self._patch_fixture_spec(monkeypatch)
         for kwargs in (
             {},                          # overview
             {"section": "paths"},        # path list
@@ -560,46 +607,45 @@ class TestOpenAPITool:
             assert len(result) <= mcp.MAX_OPENAPI_RESPONSE_CHARS + 500
 
     @pytest.mark.asyncio
-    async def test_read_openapi_spec_remote_source(self, monkeypatch):
-        """source='remote' queries the live master spec, not the bundled one."""
+    async def test_read_openapi_spec_fetches_live_once(self, monkeypatch):
+        """The tool queries the live spec via the cached loader."""
         import wapi_mcp_server as mcp
 
         fake_spec = {
-            "info": {"title": "Master API", "version": "9.9.9"},
+            "info": {"title": "Live API", "version": "9.9.9"},
             "paths": {"/widgets/": {"get": {"summary": "List widgets"}}},
-            "components": {"schemas": {"WidgetOnlyInMaster": {"type": "object"}}},
+            "components": {"schemas": {"WidgetSchema": {"type": "object"}}},
         }
         called = {"n": 0}
 
-        async def fake_remote():
+        async def fake_loader():
             called["n"] += 1
             return fake_spec
 
-        monkeypatch.setattr(mcp, "_load_openapi_spec_remote", fake_remote)
+        monkeypatch.setattr(mcp, "_openapi_cache", None)
+        monkeypatch.setattr(mcp, "_load_openapi_spec", fake_loader)
 
-        # Overview reports the master source and master-only content.
-        overview = await mcp.read_openapi_spec(source="remote")
-        assert "MASTER" in overview
-        assert "Master API" in overview
+        overview = await mcp.read_openapi_spec()
+        assert "Live API" in overview
         assert called["n"] == 1
 
-        # A schema only present in master is found via the remote source.
-        schema = await mcp.read_openapi_spec(schema_name="WidgetOnlyInMaster", source="master")
-        assert "WidgetOnlyInMaster" in schema
+        schema = await mcp.read_openapi_spec(schema_name="WidgetSchema")
+        assert "WidgetSchema" in schema
 
     @pytest.mark.asyncio
-    async def test_read_openapi_spec_remote_fetch_error(self, monkeypatch):
-        """A remote fetch failure returns a clean error, not an exception."""
+    async def test_read_openapi_spec_fetch_error(self, monkeypatch):
+        """A fetch failure returns a clean error, not an exception."""
         import wapi_mcp_server as mcp
 
         async def boom():
             raise RuntimeError("HTTP 503")
 
-        monkeypatch.setattr(mcp, "_load_openapi_spec_remote", boom)
+        monkeypatch.setattr(mcp, "_openapi_cache", None)
+        monkeypatch.setattr(mcp, "_load_openapi_spec", boom)
 
-        result = await mcp.read_openapi_spec(search="x", source="remote")
+        result = await mcp.read_openapi_spec(search="x")
         assert isinstance(result, str)
-        assert "Error fetching master OpenAPI spec" in result
+        assert "Error fetching OpenAPI spec" in result
 
 
 class TestArtifactSearchTool:
@@ -1504,15 +1550,15 @@ class TestWriteSchemaConformance:
     The write request models are additionalProperties: false, and differ from the
     read models (e.g. the update spec is MultiContainerArtifactSpec — containerGroups
     only, no `type`). These tests guard against echoing read-model fields back on a
-    write, which 422s. They are derived from the bundled openapi.yaml so they track
-    the spec.
+    write, which 422s. They are derived from the pinned tests/fixtures/openapi.yaml
+    snapshot so they track the spec offline.
     """
 
     @staticmethod
     def _props(schema_name):
         import pathlib
         import yaml
-        spec_path = pathlib.Path(__file__).resolve().parent.parent / "openapi.yaml"
+        spec_path = pathlib.Path(__file__).resolve().parent / "fixtures" / "openapi.yaml"
         spec = yaml.safe_load(spec_path.read_text())
         return set(spec["components"]["schemas"][schema_name]["properties"].keys())
 

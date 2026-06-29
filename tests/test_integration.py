@@ -48,7 +48,7 @@ async def _discover_id(api_endpoint, api_token, kind, status=None):
 async def reset_mcp_client():
     """Reset and properly close the global MCP client around each test.
 
-    The client owns an aiohttp session; closing it on the test's own event loop
+    The client owns an httpx.AsyncClient; closing it on the test's own event loop
     (rather than dropping the reference) avoids the "Unclosed client session" /
     "Event loop is closed" teardown noise.
     """
@@ -477,42 +477,31 @@ class TestOpenAPISpecIntegration:
     """Integration tests for the read_openapi_spec tool (read-only)."""
 
     @pytest.mark.asyncio
-    async def test_read_openapi_spec_local(self):
-        """The bundled spec loads and the overview reports the local source."""
+    async def test_read_openapi_spec_live(self):
+        """The tool fetches the live spec from the configured endpoint."""
         import wapi_mcp_server as mcp
 
         result = await mcp.read_openapi_spec()
         assert isinstance(result, str)
-        assert "local" in result.lower()
-        assert "OVERVIEW" in result
-        # Bounded — never the full ~160KB spec.
+        # If the live endpoint serves the spec, we get the overview; if it doesn't
+        # expose /openapi.yaml, we get a clean error (not an exception).
+        assert "OVERVIEW" in result or "Error fetching OpenAPI spec" in result
+        # Bounded — never the full spec, which can be several MB.
         assert len(result) <= mcp.MAX_OPENAPI_RESPONSE_CHARS + 500
 
     @pytest.mark.asyncio
-    async def test_read_openapi_spec_remote_master(self):
-        """The remote source fetches the live spec from the configured endpoint."""
-        import wapi_mcp_server as mcp
-
-        result = await mcp.read_openapi_spec(source="remote")
-        assert isinstance(result, str)
-        # If the live endpoint serves the spec, we get the master overview; if it
-        # doesn't expose /openapi.yaml, we get a clean error (not an exception).
-        assert "MASTER" in result or "Error fetching master OpenAPI spec" in result
-        assert len(result) <= mcp.MAX_OPENAPI_RESPONSE_CHARS + 500
-
-    @pytest.mark.asyncio
-    async def test_read_openapi_spec_remote_has_replacement_path(self):
+    async def test_read_openapi_spec_has_replacement_path(self):
         """The live spec should expose the replacement endpoint (v0.4)."""
         import wapi_mcp_server as mcp
 
-        result = await mcp.read_openapi_spec(path="/workloads/{workload_id}/replacement", source="remote")
+        result = await mcp.read_openapi_spec(path="/workloads/{workload_id}/replacement")
         assert isinstance(result, str)
         # Either the path is present on the live spec, or the endpoint didn't serve
         # a spec at all — both are acceptable outcomes for a remote integration check.
         assert (
             "replacement" in result.lower()
             or "not found" in result.lower()
-            or "Error fetching master OpenAPI spec" in result
+            or "Error fetching OpenAPI spec" in result
         )
 
 

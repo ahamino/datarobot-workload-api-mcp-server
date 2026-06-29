@@ -1,8 +1,8 @@
 """OpenAPI spec query tool.
 
-The spec loaders/cache/constants stay in wapi_mcp_server (so test monkeypatches
-of OPENAPI_SPEC_PATH/_openapi_cache/_load_openapi_spec_remote keep working); this
-module references them via ``server.`` so those patches take effect.
+The spec loader/cache/constants stay in wapi_mcp_server (so test monkeypatches of
+_load_openapi_spec / _openapi_cache keep working); this module references them via
+``server.`` so those patches take effect.
 """
 
 from typing import Optional
@@ -19,33 +19,28 @@ async def read_openapi_spec(
     search: Optional[str] = None,
     schema_name: Optional[str] = None,
     path: Optional[str] = None,
-    source: str = "local",
 ) -> str:
     """Query the Workload API OpenAPI specification.
 
     Use this tool to understand the API schema, available endpoints, request/response
-    formats, and valid field values before making API calls. Queries are targeted
-    and return bounded output — the full ~160KB spec is never returned at once, so
+    formats, and valid field values before making API calls. The spec is fetched live
+    from {DATAROBOT_API_ENDPOINT}/openapi.yaml — the source of truth for the deployed
+    environment — and cached for the process. Queries are targeted and return bounded
+    output — the full spec (which can be several MB) is never returned at once, so
     request the specific schema_name, path, search term, or section list you need.
 
-    Two sources are available:
-    - "local" (default): the spec bundled with this server. Fast, offline.
-    - "remote" (aka "master"/"live"): fetched from {DATAROBOT_API_ENDPOINT}/openapi.yaml
-      — the source of truth for the deployed environment. Use this when you suspect
-      the bundled spec is behind, or to confirm what the live API actually accepts.
-
     USAGE EXAMPLES:
-        # Overview of the bundled spec
+        # Overview of the spec
         read_openapi_spec()
 
         # Get a specific schema by name
         read_openapi_spec(schema_name="CreateWorkloadRequest")
 
-        # Search the LIVE master spec for a keyword
-        read_openapi_spec(search="replica", source="remote")
+        # Search for a keyword
+        read_openapi_spec(search="replica")
 
-        # Inspect an endpoint on the live spec
-        read_openapi_spec(path="/workloads", source="master")
+        # Inspect an endpoint
+        read_openapi_spec(path="/workloads")
 
     Args:
         section: Section to retrieve: "info", "paths", or "schemas" (lists names,
@@ -53,20 +48,15 @@ async def read_openapi_spec(
         search: Search for a keyword in schema/field names (case-insensitive)
         schema_name: Get a specific schema definition by exact name
         path: Get details for a specific API path (e.g., "/workloads")
-        source: Which spec to query: "local" (bundled, default) or "remote"/"master"/
-                "live" (fetched from {DATAROBOT_API_ENDPOINT}/openapi.yaml).
 
     Returns formatted spec information.
     """
-    use_remote = source.lower() in server.REMOTE_SOURCE_ALIASES
     try:
-        spec = await server._load_openapi_spec_remote() if use_remote else server._load_openapi_spec()
-    except FileNotFoundError as e:
-        return f"Error: {e}"
+        spec = await server._load_openapi_spec()
     except Exception as e:
-        return f"Error fetching master OpenAPI spec: {e}"
+        return f"Error fetching OpenAPI spec: {e}"
 
-    source_label = "MASTER (live)" if use_remote else "local (bundled)"
+    source_label = "live (DATAROBOT_API_ENDPOINT/openapi.yaml)"
 
     # Handle specific schema lookup
     if schema_name:
@@ -211,7 +201,6 @@ COMMON QUERIES:
   read_openapi_spec(schema_name="X")     - Get specific schema
   read_openapi_spec(path="/workloads")   - Get endpoint details
   read_openapi_spec(search="replica")    - Search for keyword
-  read_openapi_spec(search="X", source="remote") - Query the live master spec
 
 KEY PATHS:
 """

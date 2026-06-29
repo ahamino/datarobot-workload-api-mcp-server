@@ -25,7 +25,7 @@ import argparse
 import asyncio
 import json
 import sys
-import aiohttp
+import httpx
 
 
 # Tool calls can take 10-30 minutes (workload creation, waiting for running status)
@@ -33,7 +33,7 @@ DEFAULT_TIMEOUT_SECONDS = 1800  # 30 minutes
 
 
 async def proxy_request(
-    session: aiohttp.ClientSession,
+    session: httpx.AsyncClient,
     url: str,
     token: str,
     request: dict,
@@ -90,100 +90,62 @@ async def proxy_request(
         sys.stderr.flush()
 
     try:
-        async with session.post(url, json=request, headers=headers) as resp:
-            # Only capture session ID from initialize response, then lock it
-            # This prevents subsequent responses from overwriting our session
-            # (which happens when gateway strips our session header on inbound)
-            new_session_id = current_session_id
-            new_locked = is_session_locked
+        resp = await session.post(url, json=request, headers=headers)
+        # Only capture session ID from initialize response, then lock it
+        # This prevents subsequent responses from overwriting our session
+        # (which happens when gateway strips our session header on inbound)
+        new_session_id = current_session_id
+        new_locked = is_session_locked
 
-            if method == "initialize" and not is_session_locked:
-                # Get session ID from initialize response
-                new_session_id = (
-                    resp.headers.get("x-datarobot-mcp-session-id") or
-                    resp.headers.get("mcp-session-id") or
-                    resp.headers.get("Mcp-Session-Id")
-                )
-                if new_session_id:
-                    new_locked = True  # Lock after initialize
-                    sys.stderr.write(f"[proxy] Response headers: {dict(resp.headers)}\n")
-                    sys.stderr.write(f"[proxy] Session ID captured and locked: {new_session_id}\n")
-                    sys.stderr.flush()
+        if method == "initialize" and not is_session_locked:
+            # Get session ID from initialize response
+            new_session_id = (
+                resp.headers.get("x-datarobot-mcp-session-id") or
+                resp.headers.get("mcp-session-id") or
+                resp.headers.get("Mcp-Session-Id")
+            )
+            if new_session_id:
+                new_locked = True  # Lock after initialize
+                sys.stderr.write(f"[proxy] Response headers: {dict(resp.headers)}\n")
+                sys.stderr.write(f"[proxy] Session ID captured and locked: {new_session_id}\n")
+                sys.stderr.flush()
 
-            # Notifications don't expect a response
-            if is_notification:
-                return None, new_session_id, new_locked
+        # Notifications don't expect a response
+        if is_notification:
+            return None, new_session_id, new_locked
 
-            # Check content type - FastMCP can return JSON or SSE
-            content_type = resp.headers.get("Content-Type", "")
+        # Check content type - FastMCP can return JSON or SSE
+        content_type = resp.headers.get("Content-Type", "")
 
-            # Handle SSE (Server-Sent Events) responses
-            if "text/event-stream" in content_type:
-                response = None
-                # Read entire response content to avoid generator issues
-                content = await resp.content.read()
-                for line in content.decode().split("\n"):
-                    line = line.strip()
-                    if line.startswith("data:"):
-                        data = line[5:].strip()
-                        if data:
-                            try:
-                                parsed = json.loads(data)
-                                # Return first complete JSON-RPC response
-                                if "jsonrpc" in parsed:
-                                    response = parsed
-                                    break
-                            except json.JSONDecodeError:
-                                pass
+        # Handle SSE (Server-Sent Events) responses
+        if "text/event-stream" in content_type:
+            response = None
+            # Read entire response content to avoid generator issues
+            content = resp.content
+            for line in content.decode().split("\n"):
+                line = line.strip()
+                if line.startswith("data:"):
+                    data = line[5:].strip()
+                    if data:
+                        try:
+                            parsed = json.loads(data)
+                            # Return first complete JSON-RPC response
+                            if "jsonrpc" in parsed:
+                                response = parsed
+                                break
+                        except json.JSONDecodeError:
+                            pass
 
-                # If we got here without a response, return error
-                if response is None:
-                    return {
-                        "jsonrpc": "2.0",
-                        "id": request_id,
-                        "error": {"code": -32000, "message": "No valid response in SSE stream"}
-                    }, new_session_id, new_locked
-                # Log tool completion
-                if tool_name:
-                    if response and "error" in response:
-                        sys.stderr.write(f"[proxy] ❌ Tool {tool_name} failed: {response.get('error', {}).get('message', 'unknown')[:100]}\n")
-                    else:
-                        sys.stderr.write(f"[proxy] ✓ Tool {tool_name} completed\n")
-                    sys.stderr.flush()
-
-                return response, new_session_id, new_locked
-
-            # Handle JSON responses
-            try:
-                response = await resp.json()
-            except Exception:
-                text = await resp.text()
-                # Return proper JSON-RPC error for non-JSON responses
-                if tool_name:
-                    sys.stderr.write(f"[proxy] ❌ Tool {tool_name} failed: non-JSON response\n")
-                    sys.stderr.flush()
+            # If we got here without a response, return error
+            if response is None:
                 return {
                     "jsonrpc": "2.0",
                     "id": request_id,
-                    "error": {"code": -32000, "message": f"Server error: {text[:500]}"}
+                    "error": {"code": -32000, "message": "No valid response in SSE stream"}
                 }, new_session_id, new_locked
-
-            # Check if response is a valid JSON-RPC response (has jsonrpc field)
-            if "jsonrpc" not in response:
-                # Server returned non-JSON-RPC response (like {"detail": "..."})
-                error_msg = response.get("detail") or response.get("error") or str(response)
-                if tool_name:
-                    sys.stderr.write(f"[proxy] ❌ Tool {tool_name} failed: {str(error_msg)[:100]}\n")
-                    sys.stderr.flush()
-                return {
-                    "jsonrpc": "2.0",
-                    "id": request_id,
-                    "error": {"code": -32000, "message": f"Server error: {error_msg}"}
-                }, new_session_id, new_locked
-
-            # Log tool completion for JSON responses
+            # Log tool completion
             if tool_name:
-                if "error" in response:
+                if response and "error" in response:
                     sys.stderr.write(f"[proxy] ❌ Tool {tool_name} failed: {response.get('error', {}).get('message', 'unknown')[:100]}\n")
                 else:
                     sys.stderr.write(f"[proxy] ✓ Tool {tool_name} completed\n")
@@ -191,7 +153,45 @@ async def proxy_request(
 
             return response, new_session_id, new_locked
 
-    except asyncio.TimeoutError:
+        # Handle JSON responses
+        try:
+            response = resp.json()
+        except Exception:
+            text = resp.text
+            # Return proper JSON-RPC error for non-JSON responses
+            if tool_name:
+                sys.stderr.write(f"[proxy] ❌ Tool {tool_name} failed: non-JSON response\n")
+                sys.stderr.flush()
+            return {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "error": {"code": -32000, "message": f"Server error: {text[:500]}"}
+            }, new_session_id, new_locked
+
+        # Check if response is a valid JSON-RPC response (has jsonrpc field)
+        if "jsonrpc" not in response:
+            # Server returned non-JSON-RPC response (like {"detail": "..."})
+            error_msg = response.get("detail") or response.get("error") or str(response)
+            if tool_name:
+                sys.stderr.write(f"[proxy] ❌ Tool {tool_name} failed: {str(error_msg)[:100]}\n")
+                sys.stderr.flush()
+            return {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "error": {"code": -32000, "message": f"Server error: {error_msg}"}
+            }, new_session_id, new_locked
+
+        # Log tool completion for JSON responses
+        if tool_name:
+            if "error" in response:
+                sys.stderr.write(f"[proxy] ❌ Tool {tool_name} failed: {response.get('error', {}).get('message', 'unknown')[:100]}\n")
+            else:
+                sys.stderr.write(f"[proxy] ✓ Tool {tool_name} completed\n")
+            sys.stderr.flush()
+
+        return response, new_session_id, new_locked
+
+    except httpx.TimeoutException:
         if tool_name:
             sys.stderr.write(f"[proxy] ⏱️ Tool {tool_name} timed out after {DEFAULT_TIMEOUT_SECONDS}s\n")
             sys.stderr.flush()
@@ -224,9 +224,9 @@ async def run_proxy(url: str, token: str, timeout: int):
     session_locked: bool = False
 
     # Configure timeout for long-running operations (workload creation can take 10-30 min)
-    client_timeout = aiohttp.ClientTimeout(total=timeout)
+    client_timeout = httpx.Timeout(timeout)
 
-    async with aiohttp.ClientSession(timeout=client_timeout) as session:
+    async with httpx.AsyncClient(timeout=client_timeout) as session:
         # Read from stdin line by line
         reader = asyncio.StreamReader()
         protocol = asyncio.StreamReaderProtocol(reader)

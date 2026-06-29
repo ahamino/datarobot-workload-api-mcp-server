@@ -11,7 +11,6 @@ import os
 import sys
 import time
 from functools import wraps
-from pathlib import Path
 from typing import Optional
 
 import yaml
@@ -350,19 +349,19 @@ async def get_credential_schemas() -> dict[str, list[str]]:
         LOG.info(f"Fetching OpenAPI spec from {openapi_url}")
 
         # Fetch OpenAPI spec
-        import aiohttp
+        import httpx
         import re
-        async with aiohttp.ClientSession() as session:
-            async with trace_http_client_span("GET", openapi_url) as span, \
-                    session.get(openapi_url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(10)) as session:
+            async with trace_http_client_span("GET", openapi_url) as span:
+                resp = await session.get(openapi_url)
                 if span:
-                    span.set_attribute(HTTP_RESPONSE_STATUS_CODE, resp.status)
-                if resp.status != 200:
-                    LOG.warning(f"Failed to fetch OpenAPI spec: HTTP {resp.status}")
+                    span.set_attribute(HTTP_RESPONSE_STATUS_CODE, resp.status_code)
+                if resp.status_code != 200:
+                    LOG.warning(f"Failed to fetch OpenAPI spec: HTTP {resp.status_code}")
                     _credential_schemas_cache = FALLBACK_CREDENTIAL_KEYS
                     return _credential_schemas_cache
 
-                spec_text = await resp.text()
+                spec_text = resp.text
 
         # Parse YAML
         spec = yaml.safe_load(spec_text)
@@ -463,64 +462,45 @@ async def get_credential_schemas() -> dict[str, list[str]]:
 # OpenAPI spec helpers (used by wapi_mcp/tools/openapi.py)
 # ---------------------------------------------------------------------------
 
-# Path to the bundled OpenAPI spec. Override with OPENAPI_SPEC_PATH; otherwise
-# default to the openapi.yaml sitting next to this script, which works both in
-# the container (/app/openapi.yaml) and for local/stdio runs from the repo.
-OPENAPI_SPEC_PATH = Path(os.environ.get(
-    "OPENAPI_SPEC_PATH",
-    str(Path(__file__).resolve().parent / "openapi.yaml")
-))
-
+# The Workload API publishes its OpenAPI spec at {DATAROBOT_API_ENDPOINT}/openapi.yaml.
+# We fetch it live (and cache it in-process) rather than bundling a snapshot, so
+# read_openapi_spec() always reflects the deployed environment — the same approach the
+# datarobot-workload-api skill takes. There is intentionally no bundled spec to drift.
 _openapi_cache: Optional[dict] = None
-_openapi_remote_cache: Optional[dict] = None
-
-REMOTE_SOURCE_ALIASES = {"remote", "master", "live", "server"}
 
 
-def _load_openapi_spec() -> dict:
-    """Load and cache the bundled (local) OpenAPI spec."""
+async def _load_openapi_spec() -> dict:
+    """Fetch and cache the live OpenAPI spec from {DATAROBOT_API_ENDPOINT}/openapi.yaml.
+
+    The spec is the source of truth for whatever environment DATAROBOT_API_ENDPOINT
+    points at. Fetched once per process and cached.
+    """
     global _openapi_cache
 
     if _openapi_cache is None:
-        if not OPENAPI_SPEC_PATH.exists():
-            raise FileNotFoundError(f"OpenAPI spec not found at {OPENAPI_SPEC_PATH}")
-        with open(OPENAPI_SPEC_PATH, "r") as f:
-            _openapi_cache = yaml.safe_load(f)
-    return _openapi_cache
-
-
-async def _load_openapi_spec_remote() -> dict:
-    """Fetch and cache the live master spec from {DATAROBOT_API_ENDPOINT}/openapi.yaml.
-
-    The bundled spec can lag the deployed API; the remote source is the source of
-    truth for whatever environment DATAROBOT_API_ENDPOINT points at.
-    """
-    global _openapi_remote_cache
-
-    if _openapi_remote_cache is None:
-        import aiohttp
+        import httpx
 
         client = await get_client()
         url = f"{client.base_url}/openapi.yaml"
-        LOG.info(f"Fetching master OpenAPI spec from {url}")
+        LOG.info(f"Fetching OpenAPI spec from {url}")
         headers = {"Authorization": f"Bearer {client.token}"}
-        async with aiohttp.ClientSession() as session:
-            async with trace_http_client_span("GET", url) as span, \
-                    session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(15)) as session:
+            async with trace_http_client_span("GET", url) as span:
+                resp = await session.get(url, headers=headers)
                 if span:
-                    span.set_attribute(HTTP_RESPONSE_STATUS_CODE, resp.status)
-                if resp.status != 200:
+                    span.set_attribute(HTTP_RESPONSE_STATUS_CODE, resp.status_code)
+                if resp.status_code != 200:
                     raise RuntimeError(
-                        f"Failed to fetch master OpenAPI spec from {url}: HTTP {resp.status}"
+                        f"Failed to fetch OpenAPI spec from {url}: HTTP {resp.status_code}"
                     )
-                text = await resp.text()
-        _openapi_remote_cache = yaml.safe_load(text)
-    return _openapi_remote_cache
+                text = resp.text
+        _openapi_cache = yaml.safe_load(text)
+    return _openapi_cache
 
 
-# Cap on any single read_openapi_spec response so the full spec (~160KB) never
-# lands in the agent's context. Targeted lookups (one schema/path) stay well under
-# this; anything larger is truncated with guidance to narrow the query.
+# Cap on any single read_openapi_spec response so the full spec (which can be several
+# MB) never lands in the agent's context. Targeted lookups (one schema/path) stay well
+# under this; anything larger is truncated with guidance to narrow the query.
 MAX_OPENAPI_RESPONSE_CHARS = 12000
 
 

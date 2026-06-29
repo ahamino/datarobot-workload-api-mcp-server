@@ -54,9 +54,6 @@ docker run -p 8000:8000 \
 ```bash
 export DATAROBOT_API_ENDPOINT="https://your-datarobot-instance.com/api/v2"
 export DATAROBOT_API_TOKEN="your-api-token"
-# Optional: override the bundled OpenAPI spec location used by read_openapi_spec.
-# Defaults to the openapi.yaml next to the server script (in Docker: /app/openapi.yaml).
-# export OPENAPI_SPEC_PATH="/path/to/openapi.yaml"
 ```
 
 ### Run Locally (stdio)
@@ -787,19 +784,13 @@ read_openapi_spec(path="/workloads")
 read_openapi_spec(search="replica")
 ```
 
-**Local vs. master spec.** By default queries hit the spec bundled with the server.
-Pass `source="remote"` (aliases: `"master"`, `"live"`) to query the live spec at
-`{DATAROBOT_API_ENDPOINT}/openapi.yaml` instead — the source of truth for the
-deployed environment, useful when the bundled copy may be behind:
+**Live spec — no bundled snapshot.** Queries fetch the spec on demand from
+`{DATAROBOT_API_ENDPOINT}/openapi.yaml` (cached for the process) — the source of truth
+for the deployed environment, so it never drifts from the live API. Nothing is bundled
+with the server.
 
-```python
-# Query the live master spec for the deployed environment
-read_openapi_spec(search="replacement", source="remote")
-read_openapi_spec(schema_name="StartReplacementRequest", source="master")
-```
-
-Queries return bounded output — the full (~160KB) spec is never dumped at once;
-use a specific `schema_name`, `path`, `search`, or section list.
+Queries return bounded output — the full spec (which can be several MB) is never dumped
+at once; use a specific `schema_name`, `path`, `search`, or section list.
 
 ## Project Structure
 
@@ -809,7 +800,7 @@ datarobot-workload-api-mcp-server/
 │                            # (get_client, traced_tool, helpers), health
 │                            # routes, main(); imports + re-exports the tools
 ├── wapi_mcp/                # Core package
-│   ├── client.py            # Async HTTP client (aiohttp)
+│   ├── client.py            # Async HTTP client (httpx)
 │   ├── helpers.py           # Formatting and wait utilities
 │   ├── exceptions.py        # Custom exceptions
 │   ├── telemetry.py         # OpenTelemetry integration
@@ -823,7 +814,6 @@ datarobot-workload-api-mcp-server/
 │       ├── bundles.py       # bundle_list
 │       └── openapi.py       # read_openapi_spec
 ├── claude_desktop_proxy.py  # stdio→HTTP bridge for stdio-only clients
-├── openapi.yaml             # Workload API OpenAPI spec
 ├── requirements.txt
 ├── Dockerfile
 └── pyproject.toml
@@ -836,7 +826,6 @@ datarobot-workload-api-mcp-server/
 | `DATAROBOT_API_ENDPOINT` | Yes | Base URL of the API (e.g., `https://app.datarobot.com/api/v2`) |
 | `DATAROBOT_API_TOKEN` | Yes | Bearer token for authentication |
 | `WAPI_MCP_SERVER_WORKLOAD_ID` | For proxy | Workload ID for start-mcp.sh proxy script |
-| `OPENAPI_SPEC_PATH` | No | Path to the bundled OpenAPI spec (default: the openapi.yaml next to the server script; in Docker that's /app/openapi.yaml) |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | No | OpenTelemetry collector endpoint (enables tool-call tracing/metrics) |
 | `OTEL_SERVICE_NAME` | No | Service name (default: wapi-mcp-server) |
 | `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` | No | Capture tool arguments/results on spans (default: true; set false to omit) |

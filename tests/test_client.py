@@ -101,30 +101,22 @@ class TestWapiClientOtelLogs:
 
 
 class _FakeResp:
-    """Minimal aiohttp response/context-manager double for client.request tests."""
+    """Minimal httpx.Response double for client.request tests."""
     def __init__(self, status=200, payload=None):
-        self.status = status
-        self.content_length = 1
+        self.status_code = status
+        self.content = b'{"data": []}'
+        self.text = "error body"
         self._payload = payload if payload is not None else {"data": []}
 
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *exc):
-        return False
-
-    async def json(self):
+    def json(self):
         return self._payload
-
-    async def text(self):
-        return "error body"
 
 
 class _FakeSession:
     def __init__(self, resp):
         self._resp = resp
 
-    def request(self, **kwargs):
+    async def request(self, *args, **kwargs):
         return self._resp
 
 
