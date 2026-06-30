@@ -20,9 +20,9 @@ git clone https://github.com/yourusername/wapi-mcp-server.git
 cd wapi-mcp-server
 ```
 
-2. Install dependencies:
+2. Install dependencies with [uv](https://docs.astral.sh/uv/):
 ```bash
-pip install -r requirements.txt
+uv sync
 ```
 
 3. Set environment variables:
@@ -33,7 +33,7 @@ export DATAROBOT_API_TOKEN="your-api-token"
 
 4. Run the server:
 ```bash
-python wapi_mcp_server.py
+uv run wapi-mcp-server
 ```
 
 ### Using Docker
@@ -59,8 +59,8 @@ export DATAROBOT_API_TOKEN="your-api-token"
 ### Run Locally (stdio)
 
 ```bash
-pip install -r requirements.txt
-python wapi_mcp_server.py
+uv sync
+uv run wapi-mcp-server
 ```
 
 ### Run as Container (HTTP)
@@ -318,8 +318,8 @@ The `infra/` directory contains a Pulumi program (Python) that provisions the cr
 
 ```bash
 cd infra
-python -m venv venv && source venv/bin/activate
-pip install -r requirements.txt
+# Pulumi uses uv (runtime toolchain: uv) — it syncs deps from pyproject.toml/uv.lock
+uv sync
 
 pulumi stack init dev
 pulumi config set datarobot:endpoint     "${DATAROBOT_API_ENDPOINT}"
@@ -814,9 +814,9 @@ datarobot-workload-api-mcp-server/
 │       ├── bundles.py       # bundle_list
 │       └── openapi.py       # read_openapi_spec
 ├── claude_desktop_proxy.py  # stdio→HTTP bridge for stdio-only clients
-├── requirements.txt
 ├── Dockerfile
-└── pyproject.toml
+├── pyproject.toml           # deps + dev group (managed with uv)
+└── uv.lock                  # pinned, reproducible dependency lockfile
 ```
 
 ## Environment Variables

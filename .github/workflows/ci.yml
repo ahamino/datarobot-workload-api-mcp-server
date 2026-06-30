@@ -18,25 +18,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
         with:
+          enable-cache: true
           python-version: ${{ matrix.python-version }}
 
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install pytest pytest-asyncio
+        run: uv sync --frozen
 
       - name: Run linting
-        run: |
-          pip install ruff
-          ruff check .
+        run: uv run ruff check .
 
       - name: Run unit tests
-        run: |
-          pytest tests/ -v --ignore=tests/test_integration.py
+        run: uv run pytest tests/ -v --ignore=tests/test_integration.py
 
   integration-tests:
     name: Integration Tests
@@ -48,23 +43,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
         with:
+          enable-cache: true
           python-version: "3.12"
 
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install pytest pytest-asyncio
+        run: uv sync --frozen
 
       - name: Run integration tests
         env:
           DATAROBOT_API_ENDPOINT: ${{ secrets.DATAROBOT_API_ENDPOINT }}
           DATAROBOT_API_TOKEN: ${{ secrets.DATAROBOT_API_TOKEN }}
-        run: |
-          pytest tests/test_integration.py -v
+        run: uv run pytest tests/test_integration.py -v
 
   typecheck:
     name: Type Check
@@ -72,20 +64,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
         with:
+          enable-cache: true
           python-version: "3.12"
 
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install mypy types-PyYAML
+        run: uv sync --frozen
 
       - name: Run type checking
-        run: |
-          mypy wapi_mcp/ wapi_mcp_server.py --ignore-missing-imports
+        run: uv run mypy wapi_mcp/ wapi_mcp_server.py --ignore-missing-imports
 
   build-and-push:
     name: Build & Push Image

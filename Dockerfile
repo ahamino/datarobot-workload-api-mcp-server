@@ -1,21 +1,31 @@
 FROM python:3.12-slim
 
+# uv for dependency management (pinned, copied from the official image)
+COPY --from=ghcr.io/astral-sh/uv:0.10 /uv /uvx /bin/
+
 # Create non-root user
 RUN groupadd --gid 1000 appuser && \
     useradd --uid 1000 --gid 1000 --create-home appuser
 
 WORKDIR /app
 
-# Copy and install dependencies
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+ENV UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    UV_PROJECT_ENVIRONMENT=/app/.venv \
+    PATH="/app/.venv/bin:$PATH"
 
-# Copy the MCP server
-COPY --chown=appuser:appuser wapi_mcp_server.py .
-COPY --chown=appuser:appuser wapi_mcp/ ./wapi_mcp/
+# Install runtime dependencies from the lockfile (no dev tools). The server runs
+# via `python wapi_mcp_server.py` with the source on disk, so the project itself
+# isn't installed — keeping this layer cached across source-only changes.
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-dev --no-install-project
 
-# The OpenAPI spec is fetched live from {DATAROBOT_API_ENDPOINT}/openapi.yaml at
-# runtime by read_openapi_spec() — nothing to bundle into the image.
+# Copy the MCP server. The OpenAPI spec is fetched live from
+# {DATAROBOT_API_ENDPOINT}/openapi.yaml at runtime — nothing to bundle.
+COPY wapi_mcp_server.py ./
+COPY wapi_mcp/ ./wapi_mcp/
+
+RUN chown -R appuser:appuser /app
 
 # Switch to non-root user
 USER appuser
