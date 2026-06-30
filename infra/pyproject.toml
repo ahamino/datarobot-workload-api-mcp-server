@@ -1,0 +1,9 @@
+[project]
+name = "wapi-mcp-server-infra"
+version = "0.0.0"
+description = "Pulumi program deploying the WAPI MCP Server as a DataRobot workload."
+requires-python = ">=3.10"
+dependencies = [
+    "pulumi>=3.130.0",
+    "pulumi-datarobot>=0.10.38",
+]
